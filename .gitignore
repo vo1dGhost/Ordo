@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+
+# Swift / Xcode 构建产物
+.build/
+build/
+DerivedData/
+*.xcresult
+*.dSYM
+
+# Xcode 用户状态
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
