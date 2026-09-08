@@ -65,7 +65,7 @@ final class CoreWindowInteractionTests: XCTestCase {
         )
     }
 
-    func testGestureSessionLocksWindowAndActivatesOnlyBeyondFourPoints() {
+    func testGestureSessionLocksWindowAndBecomesActiveOnlyBeyondFourPoints() {
         let window = WindowSnapshot(
             id: UUID(),
             frame: CGRect(x: 10, y: 20, width: 300, height: 200),

@@ -5,36 +5,147 @@ import XCTest
 
 @MainActor
 final class GestureCoordinatorFailureTests: XCTestCase {
-    func testRaiseFailureStopsSessionReportsStatusAndReleasesWindow() async throws {
+    func testRaiseFailureStopsSessionReportsOnceAndDoesNotWriteGeometry() async throws {
         let controller = FailureWindowController(scenario: .raiseFails)
         let status = FailureStatusRecorder()
-        let coordinator = makeCoordinator(controller: controller, status: status)
+        let outcomes = FailureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            controller: controller,
+            status: status,
+            outcomes: outcomes
+        )
 
         coordinator.handle(flags(.defaultMove, at: CGPoint(x: 100, y: 100)))
         try await waitForMetrics(controller, description: "等待窗口捕获") {
             $0.captureCount == 1
         }
-        coordinator.handle(mouse(.defaultMove, at: CGPoint(x: 120, y: 110)))
+        coordinator.handle(mouse(.defaultMove, at: CGPoint(x: 130, y: 120)))
 
-        try await waitForMetrics(controller, description: "等待置前失败后的窗口释放") {
+        try await waitForMetrics(controller, description: "等待单窗口置前失败后的释放") {
             $0.raiseAttempts == 1 && $0.releaseCount == 1
         }
-        XCTAssertEqual(status.messages.last, FailureWindowError.raiseFailed.localizedDescription)
-
-        let writesAfterFailure = await controller.metrics().completedPositionWrites
         coordinator.handle(mouse(.defaultMove, at: CGPoint(x: 180, y: 160)))
         try await allowAsynchronousWorkToSettle()
 
         let metrics = await controller.metrics()
-        XCTAssertEqual(metrics.completedPositionWrites, writesAfterFailure)
-        XCTAssertEqual(metrics.completedPositionWrites, 0)
+        XCTAssertEqual(metrics.raiseAttempts, 1)
+        XCTAssertEqual(metrics.raiseCompletions, 0)
+        XCTAssertEqual(metrics.positionAttempts, 0)
+        XCTAssertEqual(metrics.frameAttempts, 0)
         XCTAssertEqual(metrics.releaseCount, 1)
+        XCTAssertEqual(status.messages, [FailureWindowError.raiseFailed.localizedDescription])
+        XCTAssertTrue(outcomes.values.isEmpty)
+    }
+
+    func testRaiseFailureAfterReleaseReportsOnceWithoutTerminalWrite() async throws {
+        let controller = FailureWindowController(scenario: .blockedRaiseFails)
+        let status = FailureStatusRecorder()
+        let outcomes = FailureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            controller: controller,
+            status: status,
+            outcomes: outcomes
+        )
+
+        coordinator.handle(flags(.defaultMove, at: CGPoint(x: 100, y: 100)))
+        try await waitForMetrics(controller, description: "等待窗口捕获") {
+            $0.captureCount == 1
+        }
+        coordinator.handle(mouse(.defaultMove, at: CGPoint(x: 130, y: 120)))
+        try await waitForMetrics(controller, description: "等待单窗口置前进入阻塞点") {
+            $0.raiseIsBlocked
+        }
+        coordinator.handle(flags([], at: CGPoint(x: 130, y: 120)))
+        await controller.resumeBlockedRaise()
+
+        try await waitForMetrics(controller, description: "等待松键后的置前失败释放") {
+            $0.releaseCount == 1
+        }
+        try await allowAsynchronousWorkToSettle()
+
+        let metrics = await controller.metrics()
+        XCTAssertEqual(metrics.raiseAttempts, 1)
+        XCTAssertEqual(metrics.raiseCompletions, 0)
+        XCTAssertEqual(metrics.positionAttempts, 0)
+        XCTAssertEqual(metrics.releaseCount, 1)
+        XCTAssertEqual(status.messages, [FailureWindowError.raiseFailed.localizedDescription])
+        XCTAssertTrue(outcomes.values.isEmpty)
+    }
+
+    func testSnapRaiseFailureWhileModifiersRemainPressedHidesMarkerAndEndsSession() async throws {
+        let controller = FailureWindowController(scenario: .raiseFails)
+        let status = FailureStatusRecorder()
+        let preview = FailurePreviewDisplay()
+        let outcomes = FailureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            controller: controller,
+            status: status,
+            preview: preview,
+            outcomes: outcomes
+        )
+
+        coordinator.handle(flags(.defaultSnap, at: CGPoint(x: 500, y: 400)))
+        try await waitForOriginMarkerCount(1, preview: preview)
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 530, y: 400)))
+
+        try await waitForMetrics(controller, description: "等待排布置前失败后的窗口释放") {
+            $0.raiseAttempts == 1 && $0.releaseCount == 1
+        }
+        try await allowAsynchronousWorkToSettle()
+
+        let metrics = await controller.metrics()
+        XCTAssertEqual(metrics.raiseCompletions, 0)
+        XCTAssertEqual(metrics.frameAttempts, 0)
+        XCTAssertEqual(status.messages, [FailureWindowError.raiseFailed.localizedDescription])
+        XCTAssertEqual(preview.originMarkerCount, 1)
+        XCTAssertFalse(preview.isOriginMarkerVisible)
+        XCTAssertEqual(preview.hideCount, 1)
+        XCTAssertTrue(outcomes.values.isEmpty)
+    }
+
+    func testQueuedCancellationAfterRaiseFailureSuppressesStaleStatus() async throws {
+        let controller = FailureWindowController(scenario: .raiseFails)
+        let status = FailureStatusRecorder()
+        let outcomes = FailureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            controller: controller,
+            status: status,
+            outcomes: outcomes
+        )
+        await controller.setAfterRaiseFailure {
+            Task { @MainActor in
+                coordinator.cancelCurrentSession()
+            }
+        }
+
+        coordinator.handle(flags(.defaultMove, at: CGPoint(x: 100, y: 100)))
+        try await waitForMetrics(controller, description: "等待窗口捕获") {
+            $0.captureCount == 1
+        }
+        coordinator.handle(mouse(.defaultMove, at: CGPoint(x: 130, y: 120)))
+
+        try await waitForMetrics(controller, description: "等待排队取消后的释放") {
+            $0.releaseCount == 1
+        }
+        try await allowAsynchronousWorkToSettle()
+
+        let metrics = await controller.metrics()
+        XCTAssertEqual(metrics.raiseAttempts, 1)
+        XCTAssertEqual(metrics.positionAttempts, 0)
+        XCTAssertEqual(metrics.releaseCount, 1)
+        XCTAssertTrue(status.messages.isEmpty)
+        XCTAssertTrue(outcomes.values.isEmpty)
     }
 
     func testFirstPositionFailureStopsSessionAndDoesNotRetryOnLaterMouseMoves() async throws {
         let controller = FailureWindowController(scenario: .firstPositionFails)
         let status = FailureStatusRecorder()
-        let coordinator = makeCoordinator(controller: controller, status: status)
+        let outcomes = FailureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            controller: controller,
+            status: status,
+            outcomes: outcomes
+        )
 
         coordinator.handle(flags(.defaultMove, at: CGPoint(x: 50, y: 50)))
         try await waitForMetrics(controller, description: "等待窗口捕获") {
@@ -55,6 +166,7 @@ final class GestureCoordinatorFailureTests: XCTestCase {
         XCTAssertEqual(metrics.positionAttempts, 1)
         XCTAssertEqual(metrics.completedPositionWrites, 0)
         XCTAssertEqual(metrics.releaseCount, 1)
+        XCTAssertTrue(outcomes.values.isEmpty)
     }
 
     func testMouseMoveAfterNormalReleaseDoesNotWriteAgain() async throws {
@@ -84,7 +196,8 @@ final class GestureCoordinatorFailureTests: XCTestCase {
 
     func testCancellationWhilePositionWriteIsBlockedPreventsTheActualWrite() async throws {
         let controller = FailureWindowController(scenario: .blockFirstPosition)
-        let coordinator = makeCoordinator(controller: controller)
+        let outcomes = FailureOutcomeRecorder()
+        let coordinator = makeCoordinator(controller: controller, outcomes: outcomes)
 
         coordinator.handle(flags(.defaultMove, at: CGPoint(x: 10, y: 10)))
         try await waitForMetrics(controller, description: "等待窗口捕获") {
@@ -104,27 +217,85 @@ final class GestureCoordinatorFailureTests: XCTestCase {
         try await allowAsynchronousWorkToSettle()
 
         var metrics = await controller.metrics()
+        XCTAssertEqual(metrics.raiseCompletions, 1)
         XCTAssertEqual(metrics.positionAttempts, 1)
         XCTAssertEqual(metrics.completedPositionWrites, 0)
-        XCTAssertEqual(metrics.raiseCompletions, 1)
 
         coordinator.handle(mouse(.defaultMove, at: CGPoint(x: 90, y: 90)))
         try await allowAsynchronousWorkToSettle()
         metrics = await controller.metrics()
         XCTAssertEqual(metrics.positionAttempts, 1)
         XCTAssertEqual(metrics.completedPositionWrites, 0)
+        XCTAssertTrue(outcomes.values.isEmpty)
+    }
+
+    func testSnapFrameFailureReportsOnceWithoutSuccessfulOutcome() async throws {
+        let controller = FailureWindowController(scenario: .frameFails)
+        let status = FailureStatusRecorder()
+        let outcomes = FailureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            controller: controller,
+            status: status,
+            outcomes: outcomes
+        )
+
+        let start = CGPoint(x: 500, y: 400)
+        coordinator.handle(flags(.defaultSnap, at: start))
+        try await waitForMetrics(controller, description: "等待窗口捕获") {
+            $0.captureCount == 1
+        }
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 530, y: 400)))
+        coordinator.handle(flags([], at: CGPoint(x: 530, y: 400)))
+
+        try await waitForMetrics(controller, description: "等待排布失败后的窗口释放") {
+            $0.frameAttempts == 1 && $0.releaseCount == 1
+        }
+        try await allowAsynchronousWorkToSettle()
+
+        let metrics = await controller.metrics()
+        XCTAssertEqual(metrics.frameAttempts, 1)
+        XCTAssertEqual(metrics.releaseCount, 1)
+        XCTAssertEqual(status.messages, [FailureWindowError.frameFailed.localizedDescription])
+        XCTAssertTrue(outcomes.values.isEmpty)
+    }
+
+    func testSnapCaptureFailureHidesPreviewWithoutShowingOriginMarker() async throws {
+        let controller = FailureWindowController(scenario: .captureFails)
+        let status = FailureStatusRecorder()
+        let preview = FailurePreviewDisplay()
+        let coordinator = makeCoordinator(
+            controller: controller,
+            status: status,
+            preview: preview
+        )
+
+        coordinator.handle(flags(.defaultSnap, at: CGPoint(x: 500, y: 400)))
+
+        try await waitForMetrics(controller, description: "等待窗口捕获失败") {
+            $0.captureCount == 1
+        }
+        try await allowAsynchronousWorkToSettle()
+
+        XCTAssertEqual(status.messages, [FailureWindowError.captureFailed.localizedDescription])
+        XCTAssertEqual(preview.originMarkerCount, 0)
+        XCTAssertEqual(preview.hideCount, 1)
     }
 
     private func makeCoordinator(
         controller: FailureWindowController,
-        status: FailureStatusRecorder = FailureStatusRecorder()
+        status: FailureStatusRecorder = FailureStatusRecorder(),
+        preview: FailurePreviewDisplay = FailurePreviewDisplay(),
+        outcomes: FailureOutcomeRecorder = FailureOutcomeRecorder()
     ) -> GestureCoordinator {
         GestureCoordinator(
             windowController: controller,
             screenProvider: FailureScreenProvider(),
-            previewController: FailurePreviewDisplay(),
+            previewController: preview,
             onStatus: { [weak status] message in
                 status?.messages.append(message)
+            },
+            onOutcome: { [weak outcomes] outcome in
+                outcomes?.values.append(outcome)
             }
         )
     }
@@ -161,6 +332,19 @@ final class GestureCoordinatorFailureTests: XCTestCase {
         XCTFail(description)
     }
 
+    private func waitForOriginMarkerCount(
+        _ expected: Int,
+        preview: FailurePreviewDisplay
+    ) async throws {
+        for _ in 0..<250 {
+            if preview.originMarkerCount == expected {
+                return
+            }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTFail("等待起点标记显示超时")
+    }
+
     private func allowAsynchronousWorkToSettle() async throws {
         for _ in 0..<10 {
             await Task.yield()
@@ -170,40 +354,57 @@ final class GestureCoordinatorFailureTests: XCTestCase {
 }
 
 private enum FailureWindowError: Error, LocalizedError, Sendable {
+    case captureFailed
     case raiseFailed
     case positionFailed
+    case frameFailed
 
     var errorDescription: String? {
         switch self {
+        case .captureFailed:
+            "模拟窗口捕获失败"
         case .raiseFailed:
-            "模拟置前失败"
+            "模拟单窗口置前失败"
         case .positionFailed:
             "模拟位置写入失败"
+        case .frameFailed:
+            "模拟排布写入失败"
         }
     }
 }
 
 private actor FailureWindowController: WindowControlling {
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        MainActor.sharedUnownedExecutor
+    }
+
     enum Scenario: Sendable {
         case succeeds
         case raiseFails
+        case blockedRaiseFails
         case firstPositionFails
         case blockFirstPosition
+        case frameFails
+        case captureFails
     }
 
     struct Metrics: Sendable {
         var captureCount = 0
         var raiseAttempts = 0
         var raiseCompletions = 0
+        var raiseIsBlocked = false
         var positionAttempts = 0
         var completedPositionWrites = 0
         var positionIsBlocked = false
+        var frameAttempts = 0
         var releaseCount = 0
     }
 
     private let scenario: Scenario
     private var state = Metrics()
     private var blockedPositionContinuation: CheckedContinuation<Void, Never>?
+    private var blockedRaiseContinuation: CheckedContinuation<Void, Never>?
+    private var afterRaiseFailure: (@Sendable () -> Void)?
 
     init(scenario: Scenario) {
         self.scenario = scenario
@@ -211,6 +412,9 @@ private actor FailureWindowController: WindowControlling {
 
     func captureWindow(at point: CGPoint, for mode: InteractionMode) async throws -> WindowSnapshot {
         state.captureCount += 1
+        if scenario == .captureFails {
+            throw FailureWindowError.captureFailed
+        }
         return WindowSnapshot(
             id: UUID(),
             frame: CGRect(x: 50, y: 50, width: 400, height: 300),
@@ -220,6 +424,26 @@ private actor FailureWindowController: WindowControlling {
 
     func currentFrame(of window: WindowSnapshot) async throws -> CGRect {
         window.frame
+    }
+
+    func raiseWindow(_ window: WindowSnapshot) async throws {
+        state.raiseAttempts += 1
+        if scenario == .raiseFails {
+            let action = afterRaiseFailure
+            afterRaiseFailure = nil
+            action?()
+            throw FailureWindowError.raiseFailed
+        }
+        if scenario == .blockedRaiseFails {
+            state.raiseIsBlocked = true
+            await withCheckedContinuation { continuation in
+                blockedRaiseContinuation = continuation
+            }
+            state.raiseIsBlocked = false
+            try Task.checkCancellation()
+            throw FailureWindowError.raiseFailed
+        }
+        state.raiseCompletions += 1
     }
 
     func setPosition(_ position: CGPoint, of window: WindowSnapshot) async throws -> WindowSnapshot {
@@ -254,16 +478,16 @@ private actor FailureWindowController: WindowControlling {
         )
     }
 
-    func applyFrame(_ frame: CGRect, to window: WindowSnapshot) async throws -> WindowSnapshot {
-        WindowSnapshot(id: window.id, frame: frame, pid: window.pid)
-    }
-
-    func activateAndRaise(_ window: WindowSnapshot) async throws {
-        state.raiseAttempts += 1
-        if scenario == .raiseFails {
-            throw FailureWindowError.raiseFailed
+    func applyFrame(
+        _ frame: CGRect,
+        to window: WindowSnapshot,
+        transition: WindowFrameTransition
+    ) async throws -> WindowSnapshot {
+        state.frameAttempts += 1
+        if scenario == .frameFails {
+            throw FailureWindowError.frameFailed
         }
-        state.raiseCompletions += 1
+        return WindowSnapshot(id: window.id, frame: frame, pid: window.pid)
     }
 
     func release(_ window: WindowSnapshot) async {
@@ -277,6 +501,15 @@ private actor FailureWindowController: WindowControlling {
         blockedPositionContinuation = nil
     }
 
+    func resumeBlockedRaise() {
+        blockedRaiseContinuation?.resume()
+        blockedRaiseContinuation = nil
+    }
+
+    func setAfterRaiseFailure(_ action: @escaping @Sendable () -> Void) {
+        afterRaiseFailure = action
+    }
+
     func metrics() -> Metrics {
         state
     }
@@ -285,6 +518,11 @@ private actor FailureWindowController: WindowControlling {
 @MainActor
 private final class FailureStatusRecorder {
     var messages: [String] = []
+}
+
+@MainActor
+private final class FailureOutcomeRecorder {
+    var values: [GestureOutcome] = []
 }
 
 @MainActor
@@ -312,6 +550,18 @@ private final class FailureScreenProvider: ScreenGeometryProviding {
 
 @MainActor
 private final class FailurePreviewDisplay: PreviewDisplaying {
+    private(set) var originMarkerCount = 0
+    private(set) var hideCount = 0
+    private(set) var isOriginMarkerVisible = false
+
     func show(layout: SnapLayout, targetFrame: CGRect, screen: ScreenGeometry) {}
-    func hide() {}
+    func showOriginMarker(at location: CGPoint, screen: ScreenGeometry) {
+        originMarkerCount += 1
+        isOriginMarkerVisible = true
+    }
+    func hideLayout() {}
+    func hide() {
+        hideCount += 1
+        isOriginMarkerVisible = false
+    }
 }

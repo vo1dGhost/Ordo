@@ -12,7 +12,7 @@ final class CoreLayoutEngineTests: XCTestCase {
             .topRight: CGRect(x: 400.5, y: 40, width: 500.5, height: 400.5),
             .right: CGRect(x: 400.5, y: 40, width: 500.5, height: 801),
             .bottomRight: CGRect(x: 400.5, y: 440.5, width: 500.5, height: 400.5),
-            .bottom: CGRect(x: 100.2, y: 200.2, width: 600.6, height: 480.6),
+            .bottom: CGRect(x: 25.125, y: 140.125, width: 750.75, height: 600.75),
             .bottomLeft: CGRect(x: -100, y: 440.5, width: 500.5, height: 400.5),
             .left: CGRect(x: -100, y: 40, width: 500.5, height: 801),
         ]
@@ -88,6 +88,24 @@ final class CoreLayoutEngineTests: XCTestCase {
                 mainScreenFrame: main
             ),
             expected
+        )
+    }
+
+    func testScreenGeometryConvertsMarkerPointFromQuartzToAppKit() {
+        let main = CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let screen = ScreenGeometry(
+            displayID: 2,
+            frame: CGRect(x: -1280, y: 100, width: 1280, height: 800),
+            visibleFrame: CGRect(x: -1280, y: 100, width: 1280, height: 777),
+            appKitFrame: CGRect(x: -1280, y: 0, width: 1280, height: 800),
+            appKitVisibleFrame: CGRect(x: -1280, y: 23, width: 1280, height: 777),
+            backingScaleFactor: 2,
+            mainScreenFrame: main
+        )
+
+        XCTAssertEqual(
+            screen.appKitPoint(fromAX: CGPoint(x: -640, y: 350)),
+            CGPoint(x: -640, y: 550)
         )
     }
 

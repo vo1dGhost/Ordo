@@ -1,0 +1,126 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "srgb:0.02745,0.10196,0.17255,1.00000",
+      "srgb:0.09020,0.30196,0.40784,1.00000"
+    ]
+  },
+  "fill-specializations" : [
+    {
+      "appearance" : "dark",
+      "value" : {
+        "solid" : "srgb:0.00784,0.03922,0.07059,1.00000"
+      }
+    },
+    {
+      "appearance" : "tinted",
+      "value" : {
+        "solid" : "extended-gray:0.09000,1.00000"
+      }
+    }
+  ],
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "srgb:0.43529,0.90588,1.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : {
+                "solid" : "extended-gray:1.00000,1.00000"
+              }
+            }
+          ],
+          "image-name" : "03_ActiveFacet.svg",
+          "name" : "03_ActiveFacet"
+        }
+      ],
+      "name" : "03_ActiveFacet",
+      "shadow" : {
+        "kind" : "layer-color",
+        "opacity" : 0.22
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.15
+      }
+    },
+    {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "srgb:0.78039,0.95686,1.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : {
+                "solid" : "extended-gray:0.68000,1.00000"
+              }
+            }
+          ],
+          "image-name" : "02_OrderRing.svg",
+          "name" : "02_OrderRing"
+        }
+      ],
+      "name" : "02_OrderRing",
+      "shadow" : {
+        "kind" : "layer-color",
+        "opacity" : 0.16
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.34
+      }
+    },
+    {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "srgb:0.02353,0.08235,0.13333,1.00000"
+              }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : {
+                "solid" : "extended-gray:0.16000,1.00000"
+              }
+            }
+          ],
+          "image-name" : "01_WindowCore.svg",
+          "name" : "01_WindowCore"
+        }
+      ],
+      "name" : "01_WindowCore",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.12
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.10
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

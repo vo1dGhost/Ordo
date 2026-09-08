@@ -8,6 +8,13 @@ enum InteractionMode: String, CaseIterable, Codable, Sendable {
     case move
 }
 
+/// 一次窗口手势最终成功写入后的结果；不包含窗口身份或几何信息。
+enum GestureOutcome: Equatable, Sendable {
+    case moved
+    case resized
+    case snapped(SnapLayout)
+}
+
 /// 八向径向手势对应的布局，顺序按屏幕上的顺时针方向排列。
 enum SnapLayout: String, CaseIterable, Codable, Sendable {
     case topLeft

@@ -18,6 +18,10 @@ struct ScreenGeometry: Identifiable, Equatable, Sendable {
         ScreenCoordinateConverter.quartzToAppKit(rect, mainScreenFrame: mainScreenFrame)
     }
 
+    func appKitPoint(fromAX point: CGPoint) -> CGPoint {
+        ScreenCoordinateConverter.quartzToAppKit(point, mainScreenFrame: mainScreenFrame)
+    }
+
     func axRect(fromAppKit rect: CGRect) -> CGRect {
         ScreenCoordinateConverter.appKitToQuartz(rect, mainScreenFrame: mainScreenFrame)
     }

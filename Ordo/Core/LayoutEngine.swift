@@ -20,8 +20,8 @@ enum LayoutEngine {
         case .bottomRight:
             return CGRect(x: frame.midX, y: frame.midY, width: halfWidth, height: halfHeight)
         case .bottom:
-            let width = frame.width * 0.6
-            let height = frame.height * 0.6
+            let width = frame.width * 0.75
+            let height = frame.height * 0.75
             return CGRect(
                 x: frame.midX - width / 2,
                 y: frame.midY - height / 2,

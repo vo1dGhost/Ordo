@@ -10,10 +10,23 @@ final class GestureCoordinator {
         let frame: CGRect
     }
 
+    private enum WindowRaiseResult: Sendable {
+        case succeeded
+        case cancelled
+        case failed(String)
+    }
+
+    private struct TerminalTask {
+        let raiseToken: UInt64
+        let task: Task<Void, Never>
+    }
+
     private let windowController: any WindowControlling
     private let screenProvider: any ScreenGeometryProviding
     private let previewController: any PreviewDisplaying
     private let onStatus: @MainActor (String) -> Void
+    private let snapTransition: @MainActor () -> WindowFrameTransition
+    private let onOutcome: @MainActor (GestureOutcome) -> Void
 
     private var resizeChord = ModifierChord.defaultResize
     private var snapChord = ModifierChord.defaultSnap
@@ -28,8 +41,8 @@ final class GestureCoordinator {
     private var captureTask: Task<Void, Never>?
     private var pendingCaptureMouseLocations: [CGPoint] = []
     private var pendingFinishAfterCapture: ModifierChord?
-    private var raiseTasks: [UInt64: Task<Bool, Never>] = [:]
-    private var terminalTasks: [UInt64: Task<Void, Never>] = [:]
+    private var raiseTasks: [UInt64: Task<WindowRaiseResult, Never>] = [:]
+    private var terminalTasks: [UInt64: TerminalTask] = [:]
     private var generation: UInt64 = 0
     private var requiresFullModifierRelease = false
     private var currentModifiers: ModifierChord = []
@@ -38,12 +51,18 @@ final class GestureCoordinator {
         windowController: any WindowControlling,
         screenProvider: any ScreenGeometryProviding,
         previewController: any PreviewDisplaying,
-        onStatus: @escaping @MainActor (String) -> Void
+        onStatus: @escaping @MainActor (String) -> Void,
+        snapTransition: @escaping @MainActor () -> WindowFrameTransition = {
+            .animated(.snapDefault)
+        },
+        onOutcome: @escaping @MainActor (GestureOutcome) -> Void = { _ in }
     ) {
         self.windowController = windowController
         self.screenProvider = screenProvider
         self.previewController = previewController
         self.onStatus = onStatus
+        self.snapTransition = snapTransition
+        self.onOutcome = onOutcome
     }
 
     func updateShortcuts(resize: ModifierChord, snap: ModifierChord, move: ModifierChord) {
@@ -65,7 +84,10 @@ final class GestureCoordinator {
     @discardableResult
     func cancelCurrentSession() -> Bool {
         let hadActiveChord = activeChord != nil
-        let hadActiveWork = hadActiveChord || session != nil || !terminalTasks.isEmpty
+        let hadActiveWork = hadActiveChord
+            || session != nil
+            || !raiseTasks.isEmpty
+            || !terminalTasks.isEmpty
         generation &+= 1
         captureTask?.cancel()
         captureTask = nil
@@ -77,8 +99,8 @@ final class GestureCoordinator {
             task.cancel()
         }
         raiseTasks.removeAll()
-        for task in terminalTasks.values {
-            task.cancel()
+        for terminalTask in terminalTasks.values {
+            terminalTask.task.cancel()
         }
         terminalTasks.removeAll()
         pendingMotion = nil
@@ -96,7 +118,8 @@ final class GestureCoordinator {
         session = nil
         lockedScreen = nil
         activeChord = nil
-        requiresFullModifierRelease = hadActiveChord && !currentModifiers.isEmpty
+        requiresFullModifierRelease = (requiresFullModifierRelease || hadActiveChord)
+            && !currentModifiers.isEmpty
         return hadActiveWork
     }
 
@@ -123,7 +146,7 @@ final class GestureCoordinator {
                 return
             }
 
-            // 激活后忽略额外修饰键；任一必要修饰键松开即提交。
+            // 手势进入 active 状态后忽略额外修饰键；任一必要修饰键松开即提交。
             if !event.modifiers.contains(activeChord) {
                 if captureTask != nil, session == nil {
                     // AX 命中尚未返回时先记住松键；捕获完成后仍提交这次快速手势。
@@ -142,6 +165,7 @@ final class GestureCoordinator {
     }
 
     private func beginSession(mode: InteractionMode, chord: ModifierChord, location: CGPoint) {
+        cancelPendingTerminalTasks()
         generation &+= 1
         let token = generation
         activeChord = chord
@@ -153,6 +177,7 @@ final class GestureCoordinator {
         if mode == .snap, screen == nil {
             activeChord = nil
             requiresFullModifierRelease = true
+            previewController.hide()
             onStatus("无法确定鼠标所在屏幕")
             return
         }
@@ -182,6 +207,13 @@ final class GestureCoordinator {
                 )
                 self.captureTask = nil
 
+                if mode == .snap,
+                   let screen,
+                   self.pendingFinishAfterCapture == nil,
+                   self.currentModifiers.contains(chord) {
+                    self.previewController.showOriginMarker(at: location, screen: screen)
+                }
+
                 let pendingLocations = self.pendingCaptureMouseLocations
                 self.pendingCaptureMouseLocations.removeAll(keepingCapacity: true)
                 for pendingLocation in pendingLocations {
@@ -197,7 +229,10 @@ final class GestureCoordinator {
                 self.pendingCaptureMouseLocations.removeAll(keepingCapacity: true)
                 self.pendingFinishAfterCapture = nil
                 self.activeChord = nil
+                self.lockedScreen = nil
                 self.requiresFullModifierRelease = !self.currentModifiers.isEmpty
+                self.radialClassifier.reset()
+                self.previewController.hide()
                 self.onStatus(error.localizedDescription)
             }
         }
@@ -268,7 +303,8 @@ final class GestureCoordinator {
             if becameActive {
                 startRaiseIfNeeded(session.window, token: generation)
             }
-            if let selectedLayout,
+            if pendingFinishAfterCapture == nil,
+               let selectedLayout,
                let screen = lockedScreen,
                let visibleFrame = session.lockedVisibleFrame
             {
@@ -278,7 +314,7 @@ final class GestureCoordinator {
                     screen: screen
                 )
             } else {
-                previewController.hide()
+                previewController.hideLayout()
             }
 
         case .move, .resize:
@@ -289,7 +325,6 @@ final class GestureCoordinator {
             if becameActive {
                 startRaiseIfNeeded(session.window, token: generation)
             }
-
             let frame: CGRect
             switch session.mode {
             case .move:
@@ -332,24 +367,46 @@ final class GestureCoordinator {
             lockedScreen = nil
             return
         }
+        let wasActive = session.phase == .active
         let selectedLayout = session.end()
+        let frameTransition: WindowFrameTransition = session.mode == .snap
+            ? snapTransition()
+            : .immediate
         self.session = nil
         lockedScreen = nil
 
         let raiseTask = raiseTasks[sessionToken]
         let task = Task { [weak self, windowController] in
-            let raisedSuccessfully = await raiseTask?.value ?? true
+            let raiseResult = await raiseTask?.value ?? .succeeded
+            let canWriteGeometry: Bool
+            switch raiseResult {
+            case .succeeded:
+                canWriteGeometry = true
+            case .cancelled:
+                canWriteGeometry = false
+            case let .failed(message):
+                canWriteGeometry = false
+                if !Task.isCancelled {
+                    self?.onStatus(message)
+                }
+            }
 
-            if raisedSuccessfully, !Task.isCancelled {
+            if canWriteGeometry, !Task.isCancelled {
                 do {
                     try Task.checkCancellation()
+                    var outcome: GestureOutcome?
                     if session.mode == .snap,
                        let selectedLayout,
                        let visibleFrame = session.lockedVisibleFrame {
                         let target = LayoutEngine.targetFrame(for: selectedLayout, in: visibleFrame)
-                        _ = try await windowController.applyFrame(target, to: session.window)
+                        _ = try await windowController.applyFrame(
+                            target,
+                            to: session.window,
+                            transition: frameTransition
+                        )
+                        outcome = .snapped(selectedLayout)
                     } else if session.mode != .snap,
-                              session.distanceFromStart > session.activationThreshold {
+                              wasActive {
                         let finalFrame: CGRect
                         switch session.mode {
                         case .move:
@@ -362,6 +419,7 @@ final class GestureCoordinator {
                                 finalFrame.origin,
                                 of: session.window
                             )
+                            outcome = .moved
                         case .resize:
                             finalFrame = WindowFrameCalculator.resizedFrame(
                                 initialFrame: session.window.frame,
@@ -372,14 +430,21 @@ final class GestureCoordinator {
                                 finalFrame.size,
                                 of: session.window
                             )
+                            outcome = .resized
                         case .snap:
                             break
                         }
                     }
+                    if let outcome {
+                        try Task.checkCancellation()
+                        self?.onOutcome(outcome)
+                    }
                 } catch is CancellationError {
                     // 暂停、撤权或屏幕变化会取消尚未执行的最终写入。
                 } catch {
-                    self?.onStatus(error.localizedDescription)
+                    if !Task.isCancelled {
+                        self?.onStatus(error.localizedDescription)
+                    }
                 }
             }
 
@@ -388,7 +453,19 @@ final class GestureCoordinator {
             self?.raiseTasks.removeValue(forKey: sessionToken)
             self?.terminalTasks.removeValue(forKey: terminalToken)
         }
-        terminalTasks[terminalToken] = task
+        terminalTasks[terminalToken] = TerminalTask(
+            raiseToken: sessionToken,
+            task: task
+        )
+    }
+
+    private func cancelPendingTerminalTasks() {
+        let pendingTasks = terminalTasks
+        terminalTasks.removeAll()
+        for terminalTask in pendingTasks.values {
+            terminalTask.task.cancel()
+            raiseTasks.removeValue(forKey: terminalTask.raiseToken)?.cancel()
+        }
     }
 
     /// 较长组合键包含较短组合键时，允许在死区内切换到新的精确组合。
@@ -426,22 +503,34 @@ final class GestureCoordinator {
     private func startRaiseIfNeeded(_ window: WindowSnapshot, token: UInt64) {
         guard raiseTasks[token] == nil else { return }
 
-        let task = Task { [weak self, windowController] () -> Bool in
+        raiseTasks[token] = Task { [weak self, windowController] in
+            let result: WindowRaiseResult
             do {
                 try Task.checkCancellation()
-                try await windowController.activateAndRaise(window)
-                try Task.checkCancellation()
-                return true
+                try await windowController.raiseWindow(window)
+                result = .succeeded
             } catch is CancellationError {
-                return false
+                return .cancelled
             } catch {
-                guard let self, self.generation == token else { return false }
-                self.onStatus(error.localizedDescription)
-                self.cancelCurrentSession()
-                return false
+                result = .failed(error.localizedDescription)
             }
+
+            // 真实 AXRaise 会同步占用主执行器；无论成功或失败，都先让已经排队的
+            // 新输入完成取消，再允许旧会话写几何或报告过期错误。
+            await Task.yield()
+            guard !Task.isCancelled else { return .cancelled }
+
+            if case let .failed(message) = result,
+               let self,
+               self.generation == token,
+               self.session?.mode == .snap {
+                self.raiseTasks.removeValue(forKey: token)
+                self.onStatus(message)
+                self.cancelCurrentSession()
+                return .cancelled
+            }
+            return result
         }
-        raiseTasks[token] = task
     }
 
     private func drainPendingMotionIfNeeded() {
@@ -449,8 +538,20 @@ final class GestureCoordinator {
         let token = generation
         let raiseTask = raiseTasks[token]
         motionTask = Task { [weak self, windowController] in
-            if let raiseTask, !(await raiseTask.value) {
-                return
+            if let raiseTask {
+                let raiseResult = await raiseTask.value
+                guard !Task.isCancelled else { return }
+                switch raiseResult {
+                case .succeeded:
+                    break
+                case .cancelled:
+                    return
+                case let .failed(message):
+                    guard let self, self.generation == token else { return }
+                    self.onStatus(message)
+                    self.cancelCurrentSession()
+                    return
+                }
             }
 
             while !Task.isCancelled {

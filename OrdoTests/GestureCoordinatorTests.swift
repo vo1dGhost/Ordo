@@ -1,12 +1,83 @@
+import AppKit
 import CoreGraphics
+import Foundation
+import SwiftUI
 import XCTest
 @testable import Ordo
 
 @MainActor
 final class GestureCoordinatorTests: XCTestCase {
+    func testMoveRaisesOnlyCapturedExternalWindowOnce() async throws {
+        let windowController = MockWindowController()
+        let outcomes = GestureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            windowController: windowController,
+            outcomes: outcomes
+        )
+
+        coordinator.handle(flags(.defaultMove, at: CGPoint(x: 100, y: 100)))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultMove, at: CGPoint(x: 120, y: 115)))
+        coordinator.handle(mouse(.defaultMove, at: CGPoint(x: 120, y: 115)))
+        coordinator.handle(flags([], at: CGPoint(x: 120, y: 115)))
+        try await waitForReleaseCount(1, controller: windowController)
+
+        let metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.raisedWindowIDs, metrics.capturedWindowIDs)
+        XCTAssertGreaterThanOrEqual(metrics.positionWriteCount, 1)
+        XCTAssertEqual(metrics.lastPosition, CGPoint(x: 70, y: 65))
+        XCTAssertEqual(outcomes.values, [.moved])
+    }
+
+    func testResizeRaisesOnlyCapturedExternalWindowOnce() async throws {
+        let windowController = MockWindowController()
+        let outcomes = GestureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            windowController: windowController,
+            outcomes: outcomes
+        )
+
+        coordinator.handle(flags(.defaultResize, at: CGPoint(x: 100, y: 100)))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultResize, at: CGPoint(x: 130, y: 120)))
+        coordinator.handle(flags([], at: CGPoint(x: 130, y: 120)))
+        try await waitForReleaseCount(1, controller: windowController)
+
+        let metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.raisedWindowIDs, metrics.capturedWindowIDs)
+        XCTAssertGreaterThanOrEqual(metrics.sizeWriteCount, 1)
+        XCTAssertEqual(metrics.lastSize, CGSize(width: 430, height: 320))
+        XCTAssertEqual(outcomes.values, [.resized])
+    }
+
+    func testSnapRaisesOnlyCapturedExternalWindowOnce() async throws {
+        let windowController = MockWindowController()
+        let outcomes = GestureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            windowController: windowController,
+            outcomes: outcomes
+        )
+        let start = CGPoint(x: 500, y: 400)
+
+        coordinator.handle(flags(.defaultSnap, at: start))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 530, y: 400)))
+        coordinator.handle(flags([], at: CGPoint(x: 530, y: 400)))
+        try await waitForReleaseCount(1, controller: windowController)
+
+        let metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.raisedWindowIDs, metrics.capturedWindowIDs)
+        XCTAssertEqual(metrics.appliedFrames, [CGRect(x: 500, y: 0, width: 500, height: 800)])
+        XCTAssertEqual(outcomes.values, [.snapped(.right)])
+    }
+
     func testTwoConsecutiveMoveGesturesRearmAfterAllModifiersAreReleased() async throws {
         let windowController = MockWindowController()
-        let coordinator = makeCoordinator(windowController: windowController)
+        let outcomes = GestureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            windowController: windowController,
+            outcomes: outcomes
+        )
 
         coordinator.handle(flags(.defaultMove, at: CGPoint(x: 100, y: 100)))
         try await waitForCaptureCount(1, controller: windowController)
@@ -23,31 +94,114 @@ final class GestureCoordinatorTests: XCTestCase {
         let metrics = await windowController.metrics()
         XCTAssertEqual(metrics.captureModes, [.move, .move])
         XCTAssertEqual(metrics.lastPosition, CGPoint(x: 80, y: 60))
-        XCTAssertEqual(metrics.raiseCount, 2)
+        XCTAssertEqual(outcomes.values, [.moved, .moved])
     }
 
-    func testMoveInsideFourPointDeadZoneDoesNotRaiseOrWrite() async throws {
+    func testRepeatedCancellationStillRequiresAllModifiersToBeReleasedBeforeRearming() async throws {
         let windowController = MockWindowController()
         let coordinator = makeCoordinator(windowController: windowController)
 
-        coordinator.handle(flags(.defaultMove, at: .zero))
+        coordinator.handle(flags(.defaultMove, at: CGPoint(x: 100, y: 100)))
         try await waitForCaptureCount(1, controller: windowController)
-        coordinator.handle(mouse(.defaultMove, at: CGPoint(x: 4, y: 0)))
-        coordinator.handle(flags([], at: CGPoint(x: 4, y: 0)))
+        coordinator.cancelCurrentSession()
+        coordinator.cancelCurrentSession()
+        try await waitForReleaseCount(1, controller: windowController)
+
+        // 连续系统中断不能解除门控；只松开 Shift 后重新按下仍未全部松键。
+        coordinator.handle(flags(.control, at: CGPoint(x: 200, y: 200)))
+        coordinator.handle(flags(.defaultMove, at: CGPoint(x: 200, y: 200)))
+        try await Task.sleep(nanoseconds: 10_000_000)
+        let metricsBeforeFullRelease = await windowController.metrics()
+        XCTAssertEqual(metricsBeforeFullRelease.captureModes.count, 1)
+
+        coordinator.handle(flags([], at: CGPoint(x: 200, y: 200)))
+        coordinator.handle(flags(.defaultMove, at: CGPoint(x: 300, y: 300)))
+        try await waitForCaptureCount(2, controller: windowController)
+        let metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.captureModes, [.move, .move])
+        coordinator.cancelCurrentSession()
+    }
+
+    func testAllGesturesInsideFourPointDeadZoneDoNotRaiseWriteOrProduceOutcome() async throws {
+        for chord in [ModifierChord.defaultMove, .defaultResize, .defaultSnap] {
+            let windowController = MockWindowController()
+            let outcomes = GestureOutcomeRecorder()
+            let coordinator = makeCoordinator(
+                windowController: windowController,
+                outcomes: outcomes
+            )
+
+            coordinator.handle(flags(chord, at: .zero))
+            try await waitForCaptureCount(1, controller: windowController)
+            coordinator.handle(mouse(chord, at: CGPoint(x: 4, y: 0)))
+            coordinator.handle(flags([], at: CGPoint(x: 4, y: 0)))
+            try await waitForReleaseCount(1, controller: windowController)
+
+            let metrics = await windowController.metrics()
+            XCTAssertTrue(metrics.raisedWindowIDs.isEmpty)
+            XCTAssertEqual(metrics.positionWriteCount, 0)
+            XCTAssertEqual(metrics.sizeWriteCount, 0)
+            XCTAssertTrue(metrics.appliedFrames.isEmpty)
+            XCTAssertTrue(outcomes.values.isEmpty)
+        }
+    }
+
+    func testActiveMoveReturningToFourPointBoundaryCommitsFinalPositionOnRelease() async throws {
+        let windowController = MockWindowController()
+        let outcomes = GestureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            windowController: windowController,
+            outcomes: outcomes
+        )
+
+        coordinator.handle(flags(.defaultMove, at: CGPoint(x: 100, y: 100)))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultMove, at: CGPoint(x: 150, y: 100)))
+        try await waitForPositionWriteCount(1, controller: windowController)
+
+        // 最后一笔鼠标位置与松键连续交付，收尾必须补写已激活手势的最终位置。
+        coordinator.handle(mouse(.defaultMove, at: CGPoint(x: 104, y: 100)))
+        coordinator.handle(flags([], at: CGPoint(x: 104, y: 100)))
         try await waitForReleaseCount(1, controller: windowController)
 
         let metrics = await windowController.metrics()
-        XCTAssertEqual(metrics.raiseCount, 0)
-        XCTAssertEqual(metrics.positionWriteCount, 0)
-        XCTAssertEqual(metrics.sizeWriteCount, 0)
+        XCTAssertEqual(metrics.lastPosition, CGPoint(x: 54, y: 50))
+        XCTAssertEqual(metrics.raisedWindowIDs, metrics.capturedWindowIDs)
+        XCTAssertEqual(outcomes.values, [.moved])
+    }
+
+    func testActiveResizeReturningToOriginCommitsOriginalSizeOnRelease() async throws {
+        let windowController = MockWindowController()
+        let outcomes = GestureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            windowController: windowController,
+            outcomes: outcomes
+        )
+
+        let start = CGPoint(x: 100, y: 100)
+        coordinator.handle(flags(.defaultResize, at: start))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultResize, at: CGPoint(x: 150, y: 120)))
+        try await waitForSizeWriteCount(1, controller: windowController)
+
+        coordinator.handle(mouse(.defaultResize, at: start))
+        coordinator.handle(flags([], at: start))
+        try await waitForReleaseCount(1, controller: windowController)
+
+        let metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.lastSize, CGSize(width: 400, height: 300))
+        XCTAssertEqual(metrics.raisedWindowIDs, metrics.capturedWindowIDs)
+        XCTAssertEqual(outcomes.values, [.resized])
     }
 
     func testSnapShowsPreviewAndCommitsRightHalfOnlyOnRelease() async throws {
         let windowController = MockWindowController()
         let preview = MockPreviewDisplay()
+        let outcomes = GestureOutcomeRecorder()
         let coordinator = makeCoordinator(
             windowController: windowController,
-            preview: preview
+            preview: preview,
+            outcomes: outcomes
         )
 
         let start = CGPoint(x: 500, y: 400)
@@ -67,10 +221,450 @@ final class GestureCoordinatorTests: XCTestCase {
         metrics = await windowController.metrics()
         XCTAssertEqual(metrics.captureModes, [.snap])
         XCTAssertEqual(metrics.appliedFrames, [CGRect(x: 500, y: 0, width: 500, height: 800)])
+        XCTAssertEqual(metrics.appliedTransitions, [.animated(.snapDefault)])
+        XCTAssertGreaterThanOrEqual(preview.hideCount, 1)
+        XCTAssertEqual(outcomes.values, [.snapped(.right)])
+    }
+
+    func testSnapShowsOriginMarkerBeforeReplayingBufferedMouseLocations() async throws {
+        let windowController = MockWindowController(captureDelayNanoseconds: 30_000_000)
+        let preview = MockPreviewDisplay()
+        let coordinator = makeCoordinator(windowController: windowController, preview: preview)
+        let start = CGPoint(x: 500, y: 400)
+
+        coordinator.handle(flags(.defaultSnap, at: start))
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 530, y: 400)))
+
+        XCTAssertTrue(preview.originMarkerLocations.isEmpty)
+        XCTAssertTrue(preview.events.isEmpty)
+
+        try await waitForPreviewEventCount(2, preview: preview)
+
+        XCTAssertEqual(preview.originMarkerLocations, [start])
+        XCTAssertEqual(preview.originMarkerDisplayIDs, [1])
+        XCTAssertEqual(preview.events, [.originMarker, .layout(.right)])
+        XCTAssertTrue(preview.isOriginMarkerVisible)
+
+        coordinator.cancelCurrentSession()
+        XCTAssertFalse(preview.isOriginMarkerVisible)
+    }
+
+    func testSnapReleasedDuringCaptureDoesNotShowOriginMarker() async throws {
+        let windowController = MockWindowController(captureDelayNanoseconds: 30_000_000)
+        let preview = MockPreviewDisplay()
+        let coordinator = makeCoordinator(windowController: windowController, preview: preview)
+        let start = CGPoint(x: 500, y: 400)
+
+        coordinator.handle(flags(.defaultSnap, at: start))
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 530, y: 400)))
+        coordinator.handle(flags([], at: CGPoint(x: 530, y: 400)))
+
+        try await waitForReleaseCount(1, controller: windowController)
+
+        XCTAssertTrue(preview.originMarkerLocations.isEmpty)
+        XCTAssertTrue(preview.events.isEmpty)
+        XCTAssertFalse(preview.isOriginMarkerVisible)
         XCTAssertGreaterThanOrEqual(preview.hideCount, 1)
     }
 
-    func testSnapRaisesAfterFourPointsWithoutSelectingInsideRadialDeadZone() async throws {
+    func testReturningToSnapClearRadiusHidesOnlyLayoutAndKeepsOriginMarker() async throws {
+        let windowController = MockWindowController()
+        let preview = MockPreviewDisplay()
+        let coordinator = makeCoordinator(windowController: windowController, preview: preview)
+        let start = CGPoint(x: 500, y: 400)
+
+        coordinator.handle(flags(.defaultSnap, at: start))
+        try await waitForOriginMarkerCount(1, preview: preview)
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 530, y: 400)))
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 515, y: 400)))
+
+        XCTAssertNil(preview.lastLayout)
+        XCTAssertEqual(preview.originMarkerLocations, [start])
+        XCTAssertEqual(preview.hideLayoutCount, 1)
+        XCTAssertEqual(preview.hideCount, 0)
+        XCTAssertTrue(preview.isOriginMarkerVisible)
+
+        coordinator.handle(flags([], at: CGPoint(x: 515, y: 400)))
+        try await waitForReleaseCount(1, controller: windowController)
+        XCTAssertFalse(preview.isOriginMarkerVisible)
+        XCTAssertEqual(preview.hideCount, 1)
+    }
+
+    func testMoveGestureNeverShowsOriginMarker() async throws {
+        let windowController = MockWindowController()
+        let preview = MockPreviewDisplay()
+        let coordinator = makeCoordinator(windowController: windowController, preview: preview)
+
+        coordinator.handle(flags(.defaultMove, at: CGPoint(x: 100, y: 100)))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultMove, at: CGPoint(x: 130, y: 120)))
+        coordinator.handle(flags([], at: CGPoint(x: 130, y: 120)))
+        try await waitForReleaseCount(1, controller: windowController)
+
+        XCTAssertTrue(preview.originMarkerLocations.isEmpty)
+    }
+
+    func testRealMarkerHighlightFollowsRadialThresholdsHysteresisAndRelease() async throws {
+        let windowController = MockWindowController()
+        let markerPanel = NSPanel(
+            contentRect: .zero,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        let preview = PreviewPanelController(markerPanelFactory: { markerPanel })
+        let coordinator = GestureCoordinator(
+            windowController: windowController,
+            screenProvider: MockScreenProvider(),
+            previewController: preview,
+            onStatus: { _ in }
+        )
+        defer {
+            coordinator.cancelCurrentSession()
+            preview.invalidate()
+        }
+        let start = CGPoint(x: 500, y: 400)
+        coordinator.handle(flags(.defaultSnap, at: start))
+        for _ in 0..<200 {
+            if markerPanel.contentViewController != nil { break }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        let host = try XCTUnwrap(
+            markerPanel.contentViewController as? NSHostingController<SnapOriginMarkerView>
+        )
+        let originFrame = markerPanel.frame
+
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 524, y: 400)))
+        XCTAssertNil(host.rootView.selectedLayout)
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 525, y: 400)))
+        XCTAssertEqual(host.rootView.selectedLayout, .right)
+
+        // 越过 22.5° 分界但尚在 6° 迟滞范围内，保留右方向。
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 520, y: 410)))
+        XCTAssertEqual(host.rootView.selectedLayout, .right)
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 526, y: 415)))
+        XCTAssertEqual(host.rootView.selectedLayout, .bottomRight)
+
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 516, y: 400)))
+        XCTAssertNil(host.rootView.selectedLayout)
+        XCTAssertTrue(host === markerPanel.contentViewController)
+        XCTAssertEqual(markerPanel.frame, originFrame)
+
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 500, y: 370)))
+        XCTAssertEqual(host.rootView.selectedLayout, .top)
+        coordinator.handle(flags([], at: CGPoint(x: 500, y: 370)))
+        XCTAssertNil(host.rootView.selectedLayout)
+        XCTAssertNil(markerPanel.contentViewController)
+        try await waitForReleaseCount(1, controller: windowController)
+    }
+
+    func testReduceMotionUsesImmediateSnapTransition() async throws {
+        let windowController = MockWindowController()
+        let coordinator = makeCoordinator(
+            windowController: windowController,
+            snapTransition: { .immediate }
+        )
+
+        let start = CGPoint(x: 500, y: 400)
+        coordinator.handle(flags(.defaultSnap, at: start))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 530, y: 400)))
+        coordinator.handle(flags([], at: CGPoint(x: 530, y: 400)))
+        try await waitForReleaseCount(1, controller: windowController)
+
+        let metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.appliedTransitions, [.immediate])
+    }
+
+    func testSnapTransitionProviderUsesLatestValueWhenGestureFinishes() async throws {
+        let windowController = MockWindowController()
+        let transitionState = SnapTransitionState(animationEnabled: true)
+        let coordinator = makeCoordinator(
+            windowController: windowController,
+            snapTransition: {
+                transitionState.animationEnabled ? .animated(.snapDefault) : .immediate
+            }
+        )
+
+        let start = CGPoint(x: 500, y: 400)
+        coordinator.handle(flags(.defaultSnap, at: start))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 530, y: 400)))
+
+        transitionState.animationEnabled = false
+        coordinator.handle(flags([], at: CGPoint(x: 530, y: 400)))
+        try await waitForReleaseCount(1, controller: windowController)
+
+        let metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.appliedTransitions, [.immediate])
+    }
+
+    func testSnapOutcomeWaitsUntilAnimatedTransitionCompletes() async throws {
+        let windowController = MockWindowController(blocksFrameApplication: true)
+        let outcomes = GestureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            windowController: windowController,
+            outcomes: outcomes
+        )
+
+        let start = CGPoint(x: 500, y: 400)
+        coordinator.handle(flags(.defaultSnap, at: start))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 530, y: 400)))
+        coordinator.handle(flags([], at: CGPoint(x: 530, y: 400)))
+        try await waitForBlockedFrameApplication(controller: windowController)
+
+        XCTAssertTrue(outcomes.values.isEmpty)
+        var metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.releaseCount, 0)
+
+        await windowController.resumeBlockedFrameApplication()
+        try await waitForReleaseCount(1, controller: windowController)
+
+        XCTAssertEqual(outcomes.values, [.snapped(.right)])
+        metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.completedFrameApplications, 1)
+    }
+
+    func testNewGestureCancelsPendingSnapTransitionAtCurrentFrame() async throws {
+        let windowController = MockWindowController(blocksFrameApplication: true)
+        let outcomes = GestureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            windowController: windowController,
+            outcomes: outcomes
+        )
+
+        let start = CGPoint(x: 500, y: 400)
+        coordinator.handle(flags(.defaultSnap, at: start))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 530, y: 400)))
+        coordinator.handle(flags([], at: CGPoint(x: 530, y: 400)))
+        try await waitForBlockedFrameApplication(controller: windowController)
+
+        coordinator.handle(flags(.defaultMove, at: CGPoint(x: 200, y: 200)))
+        try await waitForCaptureCount(2, controller: windowController)
+        try await waitForReleaseCount(1, controller: windowController)
+
+        var metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.completedFrameApplications, 0)
+        XCTAssertTrue(outcomes.values.isEmpty)
+
+        coordinator.cancelCurrentSession()
+        try await waitForReleaseCount(2, controller: windowController)
+        metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.releaseCount, 2)
+    }
+
+    func testCancellationStopsPendingSnapTransitionWithoutOutcome() async throws {
+        let windowController = MockWindowController(blocksFrameApplication: true)
+        let outcomes = GestureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            windowController: windowController,
+            outcomes: outcomes
+        )
+
+        let start = CGPoint(x: 500, y: 400)
+        coordinator.handle(flags(.defaultSnap, at: start))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 530, y: 400)))
+        coordinator.handle(flags([], at: CGPoint(x: 530, y: 400)))
+        try await waitForBlockedFrameApplication(controller: windowController)
+
+        coordinator.cancelCurrentSession()
+        try await waitForReleaseCount(1, controller: windowController)
+
+        let metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.completedFrameApplications, 0)
+        XCTAssertEqual(metrics.releaseCount, 1)
+        XCTAssertTrue(outcomes.values.isEmpty)
+    }
+
+    func testMoveWaitsForSingleWindowRaiseBeforeWritingGeometry() async throws {
+        let windowController = MockWindowController(blocksRaise: true)
+        let coordinator = makeCoordinator(windowController: windowController)
+
+        coordinator.handle(flags(.defaultMove, at: CGPoint(x: 100, y: 100)))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultMove, at: CGPoint(x: 130, y: 120)))
+        try await waitForBlockedRaise(controller: windowController)
+
+        var metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.raisedWindowIDs, metrics.capturedWindowIDs)
+        XCTAssertTrue(metrics.completedRaisedWindowIDs.isEmpty)
+        XCTAssertEqual(metrics.positionWriteCount, 0)
+
+        await windowController.resumeBlockedRaise()
+        try await waitForPositionWriteCount(1, controller: windowController)
+        coordinator.handle(flags([], at: CGPoint(x: 130, y: 120)))
+        try await waitForReleaseCount(1, controller: windowController)
+
+        metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.completedRaisedWindowIDs, metrics.capturedWindowIDs)
+        XCTAssertEqual(metrics.releasedWindowIDs, metrics.capturedWindowIDs)
+    }
+
+    func testQueuedCancellationAfterRaiseReturnsWinsBeforeGeometryWrite() async throws {
+        let windowController = MockWindowController()
+        let coordinator = makeCoordinator(windowController: windowController)
+        await windowController.setAfterRaiseReturns {
+            Task { @MainActor in
+                coordinator.cancelCurrentSession()
+            }
+        }
+
+        coordinator.handle(flags(.defaultMove, at: CGPoint(x: 100, y: 100)))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultMove, at: CGPoint(x: 130, y: 120)))
+        try await waitForReleaseCount(1, controller: windowController)
+
+        let metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.completedRaisedWindowIDs, metrics.capturedWindowIDs)
+        XCTAssertEqual(metrics.positionWriteCount, 0)
+        XCTAssertEqual(metrics.releasedWindowIDs, metrics.capturedWindowIDs)
+    }
+
+    func testSnapReleaseWaitsForSingleWindowRaiseBeforeApplyingFrame() async throws {
+        let windowController = MockWindowController(blocksRaise: true)
+        let outcomes = GestureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            windowController: windowController,
+            outcomes: outcomes
+        )
+        let start = CGPoint(x: 500, y: 400)
+
+        coordinator.handle(flags(.defaultSnap, at: start))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultSnap, at: CGPoint(x: 530, y: 400)))
+        coordinator.handle(flags([], at: CGPoint(x: 530, y: 400)))
+        try await waitForBlockedRaise(controller: windowController)
+
+        var metrics = await windowController.metrics()
+        XCTAssertTrue(metrics.appliedFrames.isEmpty)
+        XCTAssertTrue(outcomes.values.isEmpty)
+        XCTAssertEqual(metrics.releaseCount, 0)
+
+        await windowController.resumeBlockedRaise()
+        try await waitForReleaseCount(1, controller: windowController)
+
+        metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.completedRaisedWindowIDs, metrics.capturedWindowIDs)
+        XCTAssertEqual(metrics.appliedFrames, [CGRect(x: 500, y: 0, width: 500, height: 800)])
+        XCTAssertEqual(outcomes.values, [.snapped(.right)])
+    }
+
+    func testResizeReleaseWaitsForSingleWindowRaiseBeforeWritingFinalSize() async throws {
+        let windowController = MockWindowController(blocksRaise: true)
+        let outcomes = GestureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            windowController: windowController,
+            outcomes: outcomes
+        )
+
+        coordinator.handle(flags(.defaultResize, at: CGPoint(x: 100, y: 100)))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultResize, at: CGPoint(x: 130, y: 120)))
+        try await waitForBlockedRaise(controller: windowController)
+        coordinator.handle(flags([], at: CGPoint(x: 130, y: 120)))
+
+        var metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.raisedWindowIDs, metrics.capturedWindowIDs)
+        XCTAssertTrue(metrics.completedRaisedWindowIDs.isEmpty)
+        XCTAssertEqual(metrics.sizeWriteCount, 0)
+        XCTAssertEqual(metrics.releaseCount, 0)
+        XCTAssertTrue(outcomes.values.isEmpty)
+
+        await windowController.resumeBlockedRaise()
+        try await waitForReleaseCount(1, controller: windowController)
+
+        metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.completedRaisedWindowIDs, metrics.capturedWindowIDs)
+        XCTAssertEqual(metrics.sizeWriteCount, 1)
+        XCTAssertEqual(metrics.lastSize, CGSize(width: 430, height: 320))
+        XCTAssertEqual(metrics.releasedWindowIDs, metrics.capturedWindowIDs)
+        XCTAssertEqual(outcomes.values, [.resized])
+    }
+
+    func testAllGesturesCancelBlockedRaiseWithoutLaterWritesAndReleaseOnce() async throws {
+        for chord in [ModifierChord.defaultMove, .defaultResize, .defaultSnap] {
+            let windowController = MockWindowController(blocksRaise: true)
+            let outcomes = GestureOutcomeRecorder()
+            let coordinator = makeCoordinator(
+                windowController: windowController,
+                outcomes: outcomes
+            )
+
+            coordinator.handle(flags(chord, at: CGPoint(x: 100, y: 100)))
+            try await waitForCaptureCount(1, controller: windowController)
+            coordinator.handle(mouse(chord, at: CGPoint(x: 130, y: 120)))
+            try await waitForBlockedRaise(controller: windowController)
+
+            coordinator.cancelCurrentSession()
+            try await waitForReleaseCount(1, controller: windowController)
+            try await waitForRaiseToStopBlocking(controller: windowController)
+
+            let metrics = await windowController.metrics()
+            XCTAssertEqual(metrics.raisedWindowIDs, metrics.capturedWindowIDs)
+            XCTAssertTrue(metrics.completedRaisedWindowIDs.isEmpty)
+            XCTAssertEqual(metrics.positionWriteCount, 0)
+            XCTAssertEqual(metrics.sizeWriteCount, 0)
+            XCTAssertTrue(metrics.appliedFrames.isEmpty)
+            XCTAssertEqual(metrics.releasedWindowIDs, metrics.capturedWindowIDs)
+            XCTAssertTrue(outcomes.values.isEmpty)
+        }
+    }
+
+    func testNewGestureCancelsPendingMoveRaiseAndReleasesEachWindowOnce() async throws {
+        let windowController = MockWindowController(blocksRaise: true)
+        let outcomes = GestureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            windowController: windowController,
+            outcomes: outcomes
+        )
+
+        coordinator.handle(flags(.defaultMove, at: CGPoint(x: 100, y: 100)))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultMove, at: CGPoint(x: 130, y: 120)))
+        try await waitForBlockedRaise(controller: windowController)
+        coordinator.handle(flags([], at: CGPoint(x: 130, y: 120)))
+
+        coordinator.handle(flags(.defaultMove, at: CGPoint(x: 200, y: 200)))
+        try await waitForCaptureCount(2, controller: windowController)
+        try await waitForReleaseCount(1, controller: windowController)
+        try await waitForRaiseToStopBlocking(controller: windowController)
+
+        var metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.raisedWindowIDs, [metrics.capturedWindowIDs[0]])
+        XCTAssertTrue(metrics.completedRaisedWindowIDs.isEmpty)
+        XCTAssertEqual(metrics.positionWriteCount, 0)
+        XCTAssertTrue(outcomes.values.isEmpty)
+        XCTAssertEqual(metrics.releasedWindowIDs, [metrics.capturedWindowIDs[0]])
+
+        coordinator.cancelCurrentSession()
+        try await waitForReleaseCount(2, controller: windowController)
+
+        metrics = await windowController.metrics()
+        XCTAssertEqual(metrics.releasedWindowIDs.count, 2)
+        XCTAssertEqual(Set(metrics.releasedWindowIDs), Set(metrics.capturedWindowIDs))
+    }
+
+    func testSuccessfulResizeReportsOneOutcomeAfterFinalWrite() async throws {
+        let windowController = MockWindowController()
+        let outcomes = GestureOutcomeRecorder()
+        let coordinator = makeCoordinator(
+            windowController: windowController,
+            outcomes: outcomes
+        )
+
+        coordinator.handle(flags(.defaultResize, at: CGPoint(x: 100, y: 100)))
+        try await waitForCaptureCount(1, controller: windowController)
+        coordinator.handle(mouse(.defaultResize, at: CGPoint(x: 130, y: 120)))
+        coordinator.handle(flags([], at: CGPoint(x: 130, y: 120)))
+        try await waitForReleaseCount(1, controller: windowController)
+
+        XCTAssertEqual(outcomes.values, [.resized])
+    }
+
+    func testSnapPastFourPointsRaisesOnceWithoutRadialSelectionOrCommit() async throws {
         let windowController = MockWindowController()
         let preview = MockPreviewDisplay()
         let coordinator = makeCoordinator(windowController: windowController, preview: preview)
@@ -83,7 +677,7 @@ final class GestureCoordinatorTests: XCTestCase {
         try await waitForReleaseCount(1, controller: windowController)
 
         let metrics = await windowController.metrics()
-        XCTAssertEqual(metrics.raiseCount, 1)
+        XCTAssertEqual(metrics.raisedWindowIDs, metrics.capturedWindowIDs)
         XCTAssertEqual(metrics.appliedFrames.count, 0)
         XCTAssertNil(preview.lastLayout)
     }
@@ -100,8 +694,8 @@ final class GestureCoordinatorTests: XCTestCase {
 
         let metrics = await windowController.metrics()
         XCTAssertEqual(metrics.captureModes, [.move])
+        XCTAssertEqual(metrics.raisedWindowIDs, metrics.capturedWindowIDs)
         XCTAssertEqual(metrics.lastPosition, CGPoint(x: 85, y: 70))
-        XCTAssertEqual(metrics.raiseCount, 1)
     }
 
     func testPendingSnapCaptureReplaysOutwardAndReturnPathForHysteresis() async throws {
@@ -118,8 +712,8 @@ final class GestureCoordinatorTests: XCTestCase {
 
         let metrics = await windowController.metrics()
         XCTAssertEqual(metrics.captureModes, [.snap])
+        XCTAssertEqual(metrics.raisedWindowIDs, metrics.capturedWindowIDs)
         XCTAssertEqual(metrics.appliedFrames, [CGRect(x: 500, y: 0, width: 500, height: 800)])
-        XCTAssertEqual(metrics.raiseCount, 1)
     }
 
     func testLongerExactChordReplacesContainedChordBeforeActivation() async throws {
@@ -195,13 +789,21 @@ final class GestureCoordinatorTests: XCTestCase {
 
     private func makeCoordinator(
         windowController: MockWindowController,
-        preview: MockPreviewDisplay = MockPreviewDisplay()
+        preview: MockPreviewDisplay = MockPreviewDisplay(),
+        snapTransition: @escaping @MainActor () -> WindowFrameTransition = {
+            .animated(.snapDefault)
+        },
+        outcomes: GestureOutcomeRecorder = GestureOutcomeRecorder()
     ) -> GestureCoordinator {
         GestureCoordinator(
             windowController: windowController,
             screenProvider: MockScreenProvider(),
             previewController: preview,
-            onStatus: { _ in }
+            onStatus: { _ in },
+            snapTransition: snapTransition,
+            onOutcome: { [weak outcomes] outcome in
+                outcomes?.values.append(outcome)
+            }
         )
     }
 
@@ -252,24 +854,139 @@ final class GestureCoordinatorTests: XCTestCase {
         }
         XCTFail("等待排布写入超时")
     }
+
+    private func waitForOriginMarkerCount(
+        _ expected: Int,
+        preview: MockPreviewDisplay
+    ) async throws {
+        for _ in 0..<200 {
+            if preview.originMarkerLocations.count >= expected {
+                return
+            }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTFail("等待起点标记超时")
+    }
+
+    private func waitForPreviewEventCount(
+        _ expected: Int,
+        preview: MockPreviewDisplay
+    ) async throws {
+        for _ in 0..<200 {
+            if preview.events.count >= expected {
+                return
+            }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTFail("等待预览事件超时")
+    }
+
+    private func waitForBlockedFrameApplication(
+        controller: MockWindowController
+    ) async throws {
+        for _ in 0..<200 {
+            if await controller.metrics().frameApplicationIsBlocked {
+                return
+            }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTFail("等待排布动画进入阻塞点超时")
+    }
+
+    private func waitForBlockedRaise(
+        controller: MockWindowController
+    ) async throws {
+        for _ in 0..<200 {
+            if await controller.metrics().raiseIsBlocked {
+                return
+            }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTFail("等待目标窗口置前进入阻塞点超时")
+    }
+
+    private func waitForRaiseToStopBlocking(
+        controller: MockWindowController
+    ) async throws {
+        for _ in 0..<200 {
+            if !(await controller.metrics().raiseIsBlocked) {
+                return
+            }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTFail("等待目标窗口置前结束阻塞超时")
+    }
+
+    private func waitForPositionWriteCount(
+        _ expected: Int,
+        controller: MockWindowController
+    ) async throws {
+        for _ in 0..<200 {
+            if await controller.metrics().positionWriteCount >= expected {
+                return
+            }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTFail("等待窗口位置写入超时")
+    }
+
+    private func waitForSizeWriteCount(
+        _ expected: Int,
+        controller: MockWindowController
+    ) async throws {
+        for _ in 0..<200 {
+            if await controller.metrics().sizeWriteCount >= expected {
+                return
+            }
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTFail("等待窗口尺寸写入超时")
+    }
+
 }
 
 private actor MockWindowController: WindowControlling {
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        MainActor.sharedUnownedExecutor
+    }
+
     struct Metrics: Sendable {
         var captureModes: [InteractionMode] = []
-        var raiseCount = 0
+        var capturedWindowIDs: [UUID] = []
+        var raisedWindowIDs: [UUID] = []
+        var completedRaisedWindowIDs: [UUID] = []
         var positionWriteCount = 0
         var sizeWriteCount = 0
         var lastPosition: CGPoint?
+        var lastSize: CGSize?
         var appliedFrames: [CGRect] = []
+        var appliedTransitions: [WindowFrameTransition] = []
+        var completedFrameApplications = 0
+        var frameApplicationIsBlocked = false
+        var raiseIsBlocked = false
+        var releasedWindowIDs: [UUID] = []
         var releaseCount = 0
     }
 
     private var state = Metrics()
     private let captureDelayNanoseconds: UInt64
+    private let blocksFrameApplication: Bool
+    private let blocksRaise: Bool
+    private let capturePID: pid_t
+    private var afterRaiseReturns: (@Sendable () -> Void)?
+    private var blockedFrameContinuation: CheckedContinuation<Void, Never>?
+    private var blockedRaiseContinuation: CheckedContinuation<Void, Never>?
 
-    init(captureDelayNanoseconds: UInt64 = 0) {
+    init(
+        captureDelayNanoseconds: UInt64 = 0,
+        blocksFrameApplication: Bool = false,
+        blocksRaise: Bool = false,
+        capturePID: pid_t = 42
+    ) {
         self.captureDelayNanoseconds = captureDelayNanoseconds
+        self.blocksFrameApplication = blocksFrameApplication
+        self.blocksRaise = blocksRaise
+        self.capturePID = capturePID
     }
 
     func captureWindow(at point: CGPoint, for mode: InteractionMode) async throws -> WindowSnapshot {
@@ -277,15 +994,37 @@ private actor MockWindowController: WindowControlling {
         if captureDelayNanoseconds > 0 {
             try await Task.sleep(nanoseconds: captureDelayNanoseconds)
         }
-        return WindowSnapshot(
+        let window = WindowSnapshot(
             id: UUID(),
             frame: CGRect(x: 50, y: 50, width: 400, height: 300),
-            pid: 42
+            pid: capturePID
         )
+        state.capturedWindowIDs.append(window.id)
+        return window
     }
 
     func currentFrame(of window: WindowSnapshot) async throws -> CGRect {
         window.frame
+    }
+
+    func raiseWindow(_ window: WindowSnapshot) async throws {
+        state.raisedWindowIDs.append(window.id)
+        if blocksRaise {
+            state.raiseIsBlocked = true
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    blockedRaiseContinuation = continuation
+                }
+            } onCancel: {
+                Task { await self.resumeBlockedRaise() }
+            }
+            state.raiseIsBlocked = false
+            try Task.checkCancellation()
+        }
+        state.completedRaisedWindowIDs.append(window.id)
+        let action = afterRaiseReturns
+        afterRaiseReturns = nil
+        action?()
     }
 
     func setPosition(_ position: CGPoint, of window: WindowSnapshot) async throws -> WindowSnapshot {
@@ -300,6 +1039,7 @@ private actor MockWindowController: WindowControlling {
 
     func setSize(_ size: CGSize, of window: WindowSnapshot) async throws -> WindowSnapshot {
         state.sizeWriteCount += 1
+        state.lastSize = size
         return WindowSnapshot(
             id: window.id,
             frame: CGRect(origin: window.frame.origin, size: size),
@@ -307,20 +1047,51 @@ private actor MockWindowController: WindowControlling {
         )
     }
 
-    func applyFrame(_ frame: CGRect, to window: WindowSnapshot) async throws -> WindowSnapshot {
+    func applyFrame(
+        _ frame: CGRect,
+        to window: WindowSnapshot,
+        transition: WindowFrameTransition
+    ) async throws -> WindowSnapshot {
         state.appliedFrames.append(frame)
+        state.appliedTransitions.append(transition)
+
+        if blocksFrameApplication {
+            state.frameApplicationIsBlocked = true
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    blockedFrameContinuation = continuation
+                }
+            } onCancel: {
+                Task { await self.resumeBlockedFrameApplication() }
+            }
+            state.frameApplicationIsBlocked = false
+            try Task.checkCancellation()
+        }
+
+        state.completedFrameApplications += 1
         return WindowSnapshot(id: window.id, frame: frame, pid: window.pid)
     }
 
-    func activateAndRaise(_ window: WindowSnapshot) async throws {
-        state.raiseCount += 1
-    }
-
     func release(_ window: WindowSnapshot) async {
+        state.releasedWindowIDs.append(window.id)
         state.releaseCount += 1
     }
 
     func releaseAll() async {}
+
+    func resumeBlockedFrameApplication() {
+        blockedFrameContinuation?.resume()
+        blockedFrameContinuation = nil
+    }
+
+    func resumeBlockedRaise() {
+        blockedRaiseContinuation?.resume()
+        blockedRaiseContinuation = nil
+    }
+
+    func setAfterRaiseReturns(_ action: @escaping @Sendable () -> Void) {
+        afterRaiseReturns = action
+    }
 
     func metrics() -> Metrics {
         state
@@ -352,16 +1123,55 @@ private final class MockScreenProvider: ScreenGeometryProviding {
 
 @MainActor
 private final class MockPreviewDisplay: PreviewDisplaying {
+    enum Event: Equatable {
+        case originMarker
+        case layout(SnapLayout)
+    }
+
     private(set) var lastLayout: SnapLayout?
     private(set) var lastFrame: CGRect?
     private(set) var hideCount = 0
+    private(set) var hideLayoutCount = 0
+    private(set) var originMarkerLocations: [CGPoint] = []
+    private(set) var originMarkerDisplayIDs: [CGDirectDisplayID] = []
+    private(set) var isOriginMarkerVisible = false
+    private(set) var events: [Event] = []
 
     func show(layout: SnapLayout, targetFrame: CGRect, screen: ScreenGeometry) {
         lastLayout = layout
         lastFrame = targetFrame
+        events.append(.layout(layout))
+    }
+
+    func showOriginMarker(at location: CGPoint, screen: ScreenGeometry) {
+        originMarkerLocations.append(location)
+        originMarkerDisplayIDs.append(screen.displayID)
+        isOriginMarkerVisible = true
+        events.append(.originMarker)
+    }
+
+    func hideLayout() {
+        hideLayoutCount += 1
+        lastLayout = nil
     }
 
     func hide() {
         hideCount += 1
+        lastLayout = nil
+        isOriginMarkerVisible = false
+    }
+}
+
+@MainActor
+private final class GestureOutcomeRecorder {
+    var values: [GestureOutcome] = []
+}
+
+@MainActor
+private final class SnapTransitionState {
+    var animationEnabled: Bool
+
+    init(animationEnabled: Bool) {
+        self.animationEnabled = animationEnabled
     }
 }

@@ -31,8 +31,8 @@ struct PermissionOnboardingView: View {
                 )
                 PermissionBenefitRow(
                     symbol: "keyboard.badge.ellipsis",
-                    title: "不读取键盘内容",
-                    detail: "只观察修饰键状态和鼠标移动，不监听普通按键。"
+                    title: "普通模式不读取按键",
+                    detail: "窗口手势只观察修饰键和鼠标，不读取或吞掉普通输入。"
                 )
                 PermissionBenefitRow(
                     symbol: "network.slash",
@@ -83,7 +83,7 @@ struct PermissionOnboardingView: View {
         if controller.accessibilityGranted {
             return "辅助功能权限已授权。启用 Ordo 后即可使用三组鼠标手势。"
         }
-        return "macOS 需要辅助功能权限，才能让 Ordo 移动和调整其他 App 的窗口。授权只会在你点击按钮后发起。"
+        return "macOS 需要辅助功能权限，才能让 Ordo 移动和调整窗口。授权只会在你点击按钮后发起。"
     }
 }
 
