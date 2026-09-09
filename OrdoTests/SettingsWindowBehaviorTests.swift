@@ -327,6 +327,65 @@ final class MainWindowBehaviorTests: XCTestCase {
         XCTAssertTrue(window.collectionBehavior.contains(.managed))
         XCTAssertTrue(window.collectionBehavior.contains(.fullScreenNone))
     }
+
+    func testApplyCentersTitleInSystemToolbarWithoutChangingWindowControlsOrLevel() throws {
+        let styleMask: NSWindow.StyleMask = [
+            .titled, .closable, .miniaturizable, .resizable, .fullSizeContentView,
+        ]
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 680),
+            styleMask: styleMask,
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Ordo"
+        window.toolbar = NSToolbar(identifier: "OrdoTests.AutomaticToolbar")
+        window.toolbarStyle = .unifiedCompact
+        window.titleVisibility = .hidden
+
+        MainWindowBehavior.apply(to: window)
+
+        let toolbar = try XCTUnwrap(window.toolbar)
+        let titleItem = try XCTUnwrap(toolbar.items.first)
+        let titleLabel = try XCTUnwrap(titleItem.view as? NSTextField)
+        XCTAssertEqual(toolbar.items.count, 1)
+        XCTAssertEqual(toolbar.centeredItemIdentifiers, [titleItem.itemIdentifier])
+        XCTAssertEqual(titleLabel.stringValue, "Ordo")
+        XCTAssertFalse(titleLabel.isEditable)
+        XCTAssertFalse(titleLabel.isBordered)
+        XCTAssertEqual(window.toolbarStyle, .unifiedCompact)
+        XCTAssertEqual(window.titleVisibility, .hidden)
+        XCTAssertEqual(window.title, "Ordo")
+        XCTAssertEqual(window.styleMask, styleMask)
+        XCTAssertEqual(window.level, .normal)
+        XCTAssertNotNil(window.standardWindowButton(.closeButton))
+        XCTAssertNotNil(window.standardWindowButton(.miniaturizeButton))
+        XCTAssertNotNil(window.standardWindowButton(.zoomButton))
+        XCTAssertFalse(window.isVisible)
+    }
+
+    func testRepeatedTitleConfigurationReusesToolbarAndPreservesCurrentWindowTitle() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 680),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Ordo"
+        MainWindowBehavior.apply(to: window)
+        let toolbar = try XCTUnwrap(window.toolbar)
+
+        window.title = "Ordo 测试窗口"
+        XCTAssertEqual((toolbar.items.first?.view as? NSTextField)?.stringValue, "Ordo 测试窗口")
+        MainWindowBehavior.apply(to: window)
+        MainWindowBehavior.apply(to: window)
+
+        XCTAssertTrue(window.toolbar === toolbar)
+        XCTAssertEqual(toolbar.items.count, 1)
+        XCTAssertEqual((toolbar.items.first?.view as? NSTextField)?.stringValue, "Ordo 测试窗口")
+        XCTAssertEqual(window.title, "Ordo 测试窗口")
+        XCTAssertFalse(window.isVisible)
+    }
 }
 
 @MainActor

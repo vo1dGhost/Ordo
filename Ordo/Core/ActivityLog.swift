@@ -13,7 +13,7 @@ enum ActivityCategory: String, CaseIterable, Equatable, Sendable {
     case gesture = "窗口手势"
 }
 
-/// 一条仅用于本次运行的活动记录，不包含窗口、进程或输入内容等敏感信息。
+/// 一条活动记录，不包含窗口、进程或输入内容等敏感信息。
 struct ActivityLogEntry: Identifiable, Equatable, Sendable {
     let id: UUID
     let timestamp: Date
@@ -36,58 +36,26 @@ struct ActivityLogEntry: Identifiable, Equatable, Sendable {
     }
 }
 
-/// 仅保存在内存中的定长活动日志，内部顺序为从旧到新。
-struct ActivityLog: Sendable {
-    static let defaultCapacity = 200
+/// 日志同步入队，退出时等待后台写入完成；调用方无需接触文件状态。
+@MainActor
+protocol ActivityLogging: AnyObject {
+    func append(_ entry: ActivityLogEntry)
+    func finish() -> Task<Void, Never>
+}
 
-    let capacity: Int
-    private(set) var entries: [ActivityLogEntry] = []
+/// 测试宿主及无需记录日志的控制器使用此实现，避免写入真实用户目录。
+@MainActor
+final class SilentActivityLogger: ActivityLogging {
+    private let completion = Task<Void, Never> {}
 
-    init(capacity: Int = ActivityLog.defaultCapacity) {
-        precondition(capacity > 0, "活动日志容量必须大于零")
-        self.capacity = capacity
-    }
+    func append(_ entry: ActivityLogEntry) {}
+    func finish() -> Task<Void, Never> { completion }
+}
 
-    var latest: ActivityLogEntry? {
-        entries.last
-    }
-
-    var reverseChronologicalEntries: [ActivityLogEntry] {
-        Array(entries.reversed())
-    }
-
-    mutating func append(_ entry: ActivityLogEntry) {
-        entries.append(entry)
-
-        let overflowCount = entries.count - capacity
-        if overflowCount > 0 {
-            entries.removeFirst(overflowCount)
-        }
-    }
-
-    @discardableResult
-    mutating func append(
-        timestamp: Date = Date(),
-        level: ActivityLevel,
-        category: ActivityCategory,
-        message: String
-    ) -> ActivityLogEntry {
-        let entry = ActivityLogEntry(
-            timestamp: timestamp,
-            level: level,
-            category: category,
-            message: message
-        )
-        append(entry)
-        return entry
-    }
-
-    mutating func clear() {
-        entries.removeAll(keepingCapacity: true)
-    }
-
-    /// 按界面展示顺序（最新在前）生成便于复制的稳定纯文本。
-    func exportPlainText(
+enum ActivityLogFormatter {
+    /// 每条记录占一行，字段及中文文案与原活动记录保持一致。
+    static func plainText(
+        for entry: ActivityLogEntry,
         timeZone: TimeZone = .current,
         locale: Locale = Locale(identifier: "zh_CN_POSIX")
     ) -> String {
@@ -97,12 +65,11 @@ struct ActivityLog: Sendable {
         formatter.timeZone = timeZone
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
 
-        return reverseChronologicalEntries
-            .map { entry in
-                let timestamp = formatter.string(from: entry.timestamp)
-                return "[\(timestamp)] [\(entry.level.rawValue)] [\(entry.category.rawValue)] \(entry.message)"
-            }
-            .joined(separator: "\n")
+        let timestamp = formatter.string(from: entry.timestamp)
+        let message = entry.message
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        return "[\(timestamp)] [\(entry.level.rawValue)] [\(entry.category.rawValue)] \(message)\n"
     }
 }
 

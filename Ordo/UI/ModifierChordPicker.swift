@@ -3,19 +3,20 @@ import SwiftUI
 struct ModifierChordPicker: View {
     let title: String
     let detail: String
+    let identifier: String
     @Binding var selection: ModifierChord
 
     private var choices: [ModifierChoice] {
         [
-            ModifierChoice(symbol: "⌘", name: "Command 键", chord: .command),
-            ModifierChoice(symbol: "⌥", name: "Option 键", chord: .option),
-            ModifierChoice(symbol: "⌃", name: "Control 键", chord: .control),
-            ModifierChoice(symbol: "⇧", name: "Shift 键", chord: .shift)
+            ModifierChoice(id: "command", symbol: "⌘", name: "Command 键", chord: .command),
+            ModifierChoice(id: "option", symbol: "⌥", name: "Option 键", chord: .option),
+            ModifierChoice(id: "control", symbol: "⌃", name: "Control 键", chord: .control),
+            ModifierChoice(id: "shift", symbol: "⇧", name: "Shift 键", chord: .shift)
         ]
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline) {
                 Text(title)
 
@@ -29,6 +30,7 @@ struct ModifierChordPicker: View {
             Text(detail)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 8) {
                 ForEach(choices) { choice in
@@ -43,12 +45,13 @@ struct ModifierChordPicker: View {
                     .controlSize(.regular)
                     .disabled(cannotRemove(choice.chord))
                     .help(choice.name)
-                    .accessibilityLabel(choice.name)
+                    .accessibilityLabel("\(title)：\(choice.name)")
                     .accessibilityValue(selection.contains(choice.chord) ? "已选择" : "未选择")
+                    .accessibilityIdentifier("\(identifier).\(choice.id)")
                 }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 2)
         .accessibilityElement(children: .contain)
     }
 
@@ -78,9 +81,8 @@ struct ModifierChordPicker: View {
 }
 
 private struct ModifierChoice: Identifiable {
+    let id: String
     let symbol: String
     let name: String
     let chord: ModifierChord
-
-    var id: String { name }
 }

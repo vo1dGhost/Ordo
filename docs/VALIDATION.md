@@ -1,3 +1,27 @@
+# 本机验证记录 · 2026-09-09（1.0.0 发布准备）
+
+本轮将当前单栏主窗口、快捷键重置、本地文件日志及配套文档纳入首发，新增共享 Scheme 和独立 Universal 2 DMG 打包入口。App 与测试 target 的开发签名仍为固定团队的 Apple Development；仅分发副本采用 ad-hoc 签名，不代表 Developer ID 签名或 Apple 公证。
+
+- macOS 26.6.2、Xcode 26.6，在当前 Apple Silicon Mac 执行安全 XCTest：**187 项通过、0 失败、0 跳过**；Debug 构建通过。
+- 显式排除 `AXWindowCompatibilityTests.testCurrentProcessSwiftUIWindowCanBeCapturedRaisedMovedAndResized`，未将该项真实 AX 操作记为通过；下载后窗口手势另行实机验收。
+- 当前源码、main 历史文本及 47 个 PNG 元数据检查未发现凭据或个人绝对路径。提交身份保留维护者明确选择公开的新邮箱，本机归档由 `build/` 忽略规则覆盖。
+- 本节记录发布前的源码与测试检查，不代表已完成 Release 下载、全新安装或 Intel／其他 macOS 版本实机验证。
+
+本机证据位于 `build/ReleasePreparation/20260909-185120-703068/`，含工作区及 Git 备份、隐私审计报告、`tests.log`、`Tests.xcresult` 与 `test-summary.json`。备份和证据不随仓库公开。
+
+# 本机验证记录 · 2026-09-09（界面精简与快捷键重置）
+
+菜单文字改为“启用”“打开”“退出”；“手势快捷键”标题右侧新增“重置”，一次恢复并保存缩放 `⌥⇧`、排布 `⌘⌃`、移动 `⌃⇧`。移除手势规则脚注、动画说明与主界面退出按钮，退出仍由菜单栏提供。标题栏采用系统居中工具栏文字项，隐藏重复标题并保留 `NSWindow.title`；标准 Cocoa binding 支持 SwiftUI 后续更新窗口标题。
+
+- 最终安全 XCTest：**187 项通过、0 失败、0 跳过**。新增重置持久化、避免中间冲突/监听重启、保留其他设置、重复重置，以及标题栏配置与重复应用/标题更新测试。明确排除 `AXWindowCompatibilityTests.testCurrentProcessSwiftUIWindowCanBeCapturedRaisedMovedAndResized`，未运行该项真实 AX 验证。
+- 最终 Debug、Release 构建与严格验签通过；保持 Apple Development / `ND3SVRRF43`、`com.ghost7.Ordo`、Hardened Runtime、`LSUIElement=true`、无 App Sandbox。
+- 原生界面离屏截图覆盖三种尺寸、7 个状态，共14张顶部/底部截图；重置在标题同行右侧，动画只保留单行，授权态默认窗口可展示全部控制。所有窗口、事件和偏好使用测试替身，没有操作真实用户设置。离屏不能验证真实按钮点击、键盘或 VoiceOver，相关实机交互仍待验收。
+- 仅移除工具栏的初版配置未能让本机标题居中，已由原生渲染发现并更正。最终生产代码在 520 / 560 / 780 pt 宽度下，可见标题中心误差均为 **0 pt**；窗口层级、名称和标准窗口按钮保持不变。标题验证没有改动正在运行的 Ordo。
+
+证据目录：`build/InterfacePolishValidation-20260909/`，包含最终 `final-tests.log`、`final-test-summary.json`、`final-release.log`、`final-signature.log`、截图及 `render-report.txt`。最终结果包：`build/TestDerivedData/Logs/Test/Test-Ordo-2026.09.09_12-56-45-+0800.xcresult`。标题几何与截图：`build/NativeTitleValidation-20260909/final.log`、`title-520.png`、`title-560.png`、`title-780.png`。
+
+本轮新版 Release 位于 `build/InterfacePolishValidation-20260909/Products/Ordo.app`。只读运行检查发现用户正在运行上一轮 `build/Verification/Ordo.app`（PID `99017`），因此未覆盖或退出该副本，也未替换固定路径 `build/Ordo.app`。运行检查保存在 `runtime-check.log`；这里只报告新版构建完成，不报告已部署。
+
 # 本机验证记录 · 2026-09-08（main 分支整理）
 
 本轮整理当前窗口管理、主界面、活动日志、图标与开发更新流程，保留既有改动。主界面包含概览、窗口手势和活动日志三页。通用退出等待、权限恢复与监听错误去重测试迁入 `AppControllerLifecycleTests.swift`，断言语义保持一致。
@@ -192,3 +216,28 @@
 - 图标原生检查辅助程序：`build/MenuBarIconValidation/validate.swift` 与同目录 `validate`，属于当次验证产物，不是仓库长期维护的测试入口。
 
 日常构建和测试入口见 [README](../README.md)，资产维护见 [Artwork/README](../Artwork/README.md)。
+# 2026-09-09：单栏主界面与后台文件日志
+
+当前 `main` 工作树将运行、权限、三组手势、动画和退出集中到一个纵向滚动窗口，首启复用主窗口；移除日志界面，改为 UTF-8 本地文件日志和固定文件组轮替。默认窗口 560 × 680 pt，最小 520 × 500 pt。窗口手势、AX 和菜单栏图标资源未改变。
+
+## 自动验证
+
+- 安全测试集 **182 项通过、0 失败、0 跳过**。明确排除 `AXWindowCompatibilityTests.testCurrentProcessSwiftUIWindowCanBeCapturedRaisedMovedAndResized`，未运行该项真实 AX 操作验证；其目标 PID 断言失败后仍可能写入外部窗口，本次不使用它验收界面重排。
+- 覆盖首启仅请求一次主窗口、已有用户标记兼容、仅显式授权发起提示、错误去重及恢复、暂停/未授权时修正快捷键冲突、退出同时等待 AX 清理和日志完成。新红测复现了退出期间权限刷新重新开启监听，增加退出门控后通过。
+- 文件测试覆盖中文单行格式、顺序排空、跨启动追加、容量与单条超限、四份轮替、无关文件保留、锁竞争、不可写与轮替失败、一次报错停写、重复结束及结束后忽略记录。文件测试保留在本次证据目录的 `FileLogTests/` 中。
+- XCTest 默认工厂确认使用静默日志；整套测试前后，真实 `~/Library/Logs/Ordo` 均不存在，测试宿主未创建用户日志目录。
+- Debug（测试构建）及独立 Release 构建通过；两者严格签名验证通过。Release 核对 `com.ghost7.Ordo`、团队 `ND3SVRRF43`、Apple Development 签名、Hardened Runtime、`LSUIElement=true`，无 App Sandbox entitlement。受限环境不能访问私钥/信任服务，构建和验签在正常授权环境完成，未回退签名。
+
+测试结果包：`build/TestDerivedData/Logs/Test/Test-Ordo-2026.09.09_12-28-03-+0800.xcresult`。独立 Release 产物：`build/Verification/Ordo.app`。证据目录：`build/SingleInterfaceValidation-20260909/`，包括 `red-authorized.log`、`focused-tests.log`（退出门控红测）、`tests.log`、`test-summary.json`、`release.log`、`signature.log` 和 `update.log`。
+
+## 原生界面渲染与验收边界
+
+使用项目内 Swift/AppKit 渲染程序、系统协议替身和静默日志，生成 7 组状态、14 张顶部/底部截图，覆盖 560 × 680、520 × 500、640 × 800，深浅色以及已授权、未授权、暂停、快捷键冲突和监听失败。所有离屏窗口均保持不可见；每组只存在一个 `NSScrollView`，最小窗口可滚动至动画及退出，未发现横向溢出或文字布局缺失。程序及 `render-report.txt` 位于同一证据目录。
+
+离屏截图不能证明实际键盘操作或 VoiceOver；离屏无障碍树为空。系统“减少动态效果”和“减少透明度”当时均关闭，本次未改动系统设置；控制器减少动态效果由注入测试覆盖，实际 UI 切换仍待验收。首次冷启动的菜单栏标签任务、真实主窗口前置和设置交互也仍需实机核对。
+
+## 本地更新状态
+
+已调用 `./scripts/dev-update.sh`，但在检查阶段安全停止：正在运行的副本为 PID `43453`，路径 `build/MainBuild-20260908.nqd1mN/Products/Ordo.app/Contents/MacOS/Ordo`，并非固定路径 `build/Ordo.app`。未退出该副本，未替换固定路径 App；此次检查目录为 `build/Updates/20260909-123031.9Jor5N/`。
+
+需要先正常退出该运行副本，再重跑更新脚本；更新后还需核对新 PID、固定执行路径、真实日志落盘和主界面。当前仅可报告实现、测试、独立构建与签名完成，不能报告已部署或运行权限已验收。

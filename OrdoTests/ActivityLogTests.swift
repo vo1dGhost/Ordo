@@ -3,86 +3,30 @@ import XCTest
 @testable import Ordo
 
 final class ActivityLogTests: XCTestCase {
-    func testDefaultCapacityDropsOldestEntries() {
-        var log = ActivityLog()
-
-        for index in 1...205 {
-            log.append(
-                ActivityLogEntry(
-                    timestamp: Date(timeIntervalSince1970: TimeInterval(index)),
-                    level: .info,
-                    category: .app,
-                    message: "第 \(index) 条活动"
-                )
-            )
-        }
-
-        XCTAssertEqual(log.capacity, 200)
-        XCTAssertEqual(log.entries.count, 200)
-        XCTAssertEqual(log.entries.first?.message, "第 6 条活动")
-        XCTAssertEqual(log.latest?.message, "第 205 条活动")
-    }
-
-    func testReverseChronologicalEntriesReturnsNewestFirst() {
-        var log = ActivityLog(capacity: 3)
-        let first = makeEntry(second: 1, message: "先启动")
-        let second = makeEntry(second: 2, message: "再监听")
-        let third = makeEntry(second: 3, message: "最后完成")
-
-        log.append(first)
-        log.append(second)
-        log.append(third)
-
-        XCTAssertEqual(log.entries, [first, second, third])
-        XCTAssertEqual(log.reverseChronologicalEntries, [third, second, first])
-        XCTAssertEqual(log.latest, third)
-    }
-
-    func testClearRemovesAllEntries() {
-        var log = ActivityLog(capacity: 2)
-        log.append(makeEntry(second: 1, message: "Ordo 已启动"))
-
-        log.clear()
-
-        XCTAssertTrue(log.entries.isEmpty)
-        XCTAssertTrue(log.reverseChronologicalEntries.isEmpty)
-        XCTAssertNil(log.latest)
-        XCTAssertEqual(log.exportPlainText(), "")
-    }
-
-    func testPlainTextExportUsesStableChineseFormatAndNewestFirst() throws {
-        var log = ActivityLog(capacity: 2)
-        log.append(
-            ActivityLogEntry(
-                id: try XCTUnwrap(UUID(uuidString: "00000000-0000-0000-0000-000000000001")),
-                timestamp: Date(timeIntervalSince1970: 0),
-                level: .info,
-                category: .app,
-                message: "Ordo 已启动"
-            )
-        )
-        log.append(
-            ActivityLogEntry(
-                id: try XCTUnwrap(UUID(uuidString: "00000000-0000-0000-0000-000000000002")),
-                timestamp: Date(timeIntervalSince1970: 1),
-                level: .warning,
-                category: .listener,
-                message: "窗口手势监听已停止"
-            )
-        )
-
-        let text = log.exportPlainText(
-            timeZone: try XCTUnwrap(TimeZone(secondsFromGMT: 8 * 60 * 60)),
-            locale: Locale(identifier: "zh_CN_POSIX")
+    func testPlainTextUsesStableChineseFieldsAndTrailingNewline() throws {
+        let entry = ActivityLogEntry(
+            timestamp: Date(timeIntervalSince1970: 0),
+            level: .warning,
+            category: .listener,
+            message: "窗口手势监听已停止"
         )
 
         XCTAssertEqual(
-            text,
-            """
-            [1970-01-01 08:00:01] [警告] [监听] 窗口手势监听已停止
-            [1970-01-01 08:00:00] [信息] [应用] Ordo 已启动
-            """
+            ActivityLogFormatter.plainText(
+                for: entry,
+                timeZone: try XCTUnwrap(TimeZone(secondsFromGMT: 8 * 60 * 60)),
+                locale: Locale(identifier: "zh_CN_POSIX")
+            ),
+            "[1970-01-01 08:00:00] [警告] [监听] 窗口手势监听已停止\n"
         )
+    }
+
+    func testMessageLineBreaksCannotCreateAdditionalRecords() {
+        let entry = ActivityLogEntry(level: .info, category: .app, message: "第一行\r\n第二行")
+        let text = ActivityLogFormatter.plainText(for: entry)
+
+        XCTAssertEqual(text.filter { $0 == "\n" }.count, 1)
+        XCTAssertTrue(text.hasSuffix("第一行\\r\\n第二行\n"))
     }
 
     func testGestureDescriptionsContainOnlyGenericOutcomes() {
@@ -101,7 +45,7 @@ final class ActivityLogTests: XCTestCase {
     }
 
     func testEntrySchemaHasNoWindowOrInputIdentityFields() {
-        let entry = makeEntry(second: 1, message: "已移动窗口")
+        let entry = ActivityLogEntry(level: .info, category: .gesture, message: "已移动窗口")
         let fieldNames = Set(Mirror(reflecting: entry).children.compactMap(\.label))
 
         XCTAssertEqual(fieldNames, ["id", "timestamp", "level", "category", "message"])
@@ -109,14 +53,5 @@ final class ActivityLogTests: XCTestCase {
             "pid", "windowName", "applicationName", "frame", "mouseLocation",
             "keyCode", "keyValue", "keyCount",
         ]))
-    }
-
-    private func makeEntry(second: TimeInterval, message: String) -> ActivityLogEntry {
-        ActivityLogEntry(
-            timestamp: Date(timeIntervalSince1970: second),
-            level: .info,
-            category: .app,
-            message: message
-        )
     }
 }

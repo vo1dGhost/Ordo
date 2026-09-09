@@ -7,8 +7,9 @@ struct MenuBarContent: View {
 
     var body: some View {
         Toggle(isOn: $controller.isEnabled) {
-            Label("启用 Ordo", systemImage: controller.isEnabled ? "pause.circle" : "play.circle")
+            Label("启用", systemImage: controller.isEnabled ? "pause.circle" : "play.circle")
         }
+        .accessibilityLabel("启用")
         .accessibilityHint(controller.isEnabled ? "关闭窗口手势" : "启用窗口手势")
 
         Divider()
@@ -16,9 +17,10 @@ struct MenuBarContent: View {
         Button {
             MainWindowPresentation.open(using: openWindow)
         } label: {
-            Label("打开 Ordo…", systemImage: "macwindow")
+            Label("打开", systemImage: "macwindow")
         }
         .keyboardShortcut(",", modifiers: .command)
+        .accessibilityLabel("打开")
         .accessibilityHint("打开 Ordo 主界面")
 
         Divider()
@@ -26,9 +28,9 @@ struct MenuBarContent: View {
         Button {
             NSApplication.shared.terminate(nil)
         } label: {
-            Label("退出 Ordo", systemImage: "power")
+            Label("退出", systemImage: "power")
         }
         .keyboardShortcut("q", modifiers: .command)
-        .accessibilityLabel("退出 Ordo")
+        .accessibilityLabel("退出")
     }
 }

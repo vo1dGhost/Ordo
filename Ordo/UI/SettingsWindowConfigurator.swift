@@ -149,6 +149,48 @@ enum MainWindowBehavior {
     static func apply(to window: NSWindow) {
         window.collectionBehavior.remove(.canJoinAllSpaces)
         window.collectionBehavior.insert(.moveToActiveSpace)
+        // 由系统工具栏布局标题，避免紧凑标题栏将原生标题固定在左侧。
+        if !(window.toolbar is MainWindowTitleToolbar) {
+            window.toolbar = MainWindowTitleToolbar(window: window)
+        }
+        window.toolbarStyle = .unifiedCompact
+        window.titleVisibility = .hidden
+    }
+}
+
+@MainActor
+private final class MainWindowTitleToolbar: NSToolbar, NSToolbarDelegate {
+    private let titleItem: NSToolbarItem
+    private let titleLabel: NSTextField
+
+    init(window: NSWindow) {
+        titleItem = NSToolbarItem(itemIdentifier: NSToolbarItem.Identifier("Ordo.WindowTitle"))
+        titleLabel = NSTextField(labelWithString: window.title)
+        titleLabel.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        titleLabel.alignment = .center
+        titleLabel.bind(.value, to: window, withKeyPath: "title", options: nil)
+        titleItem.label = window.title
+        titleItem.view = titleLabel
+        super.init(identifier: "Ordo.MainWindowTitle")
+        delegate = self
+        centeredItemIdentifiers = [titleItem.itemIdentifier]
+        displayMode = .iconOnly
+    }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [titleItem.itemIdentifier]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [titleItem.itemIdentifier]
+    }
+
+    func toolbar(
+        _ toolbar: NSToolbar,
+        itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
+        willBeInsertedIntoToolbar flag: Bool
+    ) -> NSToolbarItem? {
+        itemIdentifier == titleItem.itemIdentifier ? titleItem : nil
     }
 }
 

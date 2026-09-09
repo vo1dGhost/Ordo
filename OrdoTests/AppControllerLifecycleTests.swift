@@ -68,14 +68,15 @@ final class AppControllerLifecycleTests: XCTestCase {
 
     func testRepeatedListenerStartFailureIsLoggedOnlyOnce() {
         let eventSource = LifecycleEventSource(startError: .eventTapCreationFailed)
-        let controller = makeController(eventSource: eventSource)
+        let logger = LifecycleActivityLogger()
+        let controller = makeController(eventSource: eventSource, activityLogger: logger)
 
         controller.start()
         for _ in 0..<5 {
             controller.refreshPermissions()
         }
 
-        let matchingErrors = controller.activityLog.filter {
+        let matchingErrors = logger.entries.filter {
             $0.level == .error
                 && $0.category == .listener
                 && $0.message == EventSourceError.eventTapCreationFailed.localizedDescription
@@ -85,9 +86,216 @@ final class AppControllerLifecycleTests: XCTestCase {
         cleanUp(controller)
     }
 
+    func testFirstLaunchRequestsMainWindowOnlyOnceWithoutPrompting() {
+        defaults.removeObject(forKey: "ordo.onboarding.shown")
+        var prompts: [Bool] = []
+        var presentationCount = 0
+        let controller = makeController(
+            eventSource: LifecycleEventSource(),
+            accessibilityTrust: { prompt in
+                prompts.append(prompt)
+                return false
+            }
+        )
+        controller.start()
+        XCTAssertFalse(defaults.bool(forKey: "ordo.onboarding.shown"))
+
+        controller.presentInitialWindowIfNeeded { presentationCount += 1 }
+        controller.presentInitialWindowIfNeeded { presentationCount += 1 }
+        controller.refreshPermissions()
+
+        XCTAssertEqual(presentationCount, 1)
+        XCTAssertTrue(defaults.bool(forKey: "ordo.onboarding.shown"))
+        XCTAssertFalse(prompts.isEmpty)
+        XCTAssertFalse(prompts.contains(true))
+        cleanUp(controller)
+    }
+
+    func testExistingUserDoesNotReceiveAnotherInitialWindow() {
+        let controller = makeController(eventSource: LifecycleEventSource())
+        var presentationCount = 0
+        controller.presentInitialWindowIfNeeded { presentationCount += 1 }
+        XCTAssertEqual(presentationCount, 0)
+        cleanUp(controller)
+    }
+
+    func testOnlyExplicitAuthorizationRequestsPermissionPrompt() {
+        var prompts: [Bool] = []
+        let controller = makeController(
+            eventSource: LifecycleEventSource(),
+            accessibilityTrust: { prompt in
+                prompts.append(prompt)
+                return false
+            }
+        )
+        controller.start()
+        controller.refreshPermissions()
+        XCTAssertFalse(prompts.contains(true))
+        controller.requestAccessibility()
+        XCTAssertEqual(prompts.filter { $0 }.count, 1)
+        cleanUp(controller)
+    }
+
+    func testSuccessfulActivitiesAreLoggedWithoutBecomingStatusMessages() {
+        let logger = LifecycleActivityLogger()
+        let controller = makeController(eventSource: LifecycleEventSource(), activityLogger: logger)
+        controller.start()
+        XCTAssertTrue(logger.entries.contains { $0.message == "Ordo 已启动" })
+        XCTAssertNil(controller.statusMessage)
+        controller.isEnabled = false
+        XCTAssertTrue(logger.entries.contains { $0.message == "Ordo 已暂停" })
+        XCTAssertNil(controller.statusMessage)
+        cleanUp(controller)
+    }
+
+    func testListenerFailureStatusClearsAfterSuccessfulRecovery() {
+        let source = LifecycleEventSource(startError: .eventTapCreationFailed)
+        let controller = makeController(eventSource: source)
+        controller.start()
+        XCTAssertEqual(controller.statusMessage, EventSourceError.eventTapCreationFailed.localizedDescription)
+        source.startError = nil
+        controller.refreshPermissions()
+        XCTAssertTrue(controller.isOperational)
+        XCTAssertNil(controller.statusMessage)
+        cleanUp(controller)
+    }
+
+    func testCorrectingShortcutsClearsConflictWhilePausedOrUnauthorized() {
+        for isGranted in [false, true] {
+            let controller = makeController(
+                eventSource: LifecycleEventSource(),
+                accessibilityTrust: { _ in isGranted }
+            )
+            controller.isEnabled = !isGranted
+            controller.start()
+            XCTAssertEqual(controller.accessibilityGranted, isGranted)
+            controller.resizeChord = controller.moveChord
+            XCTAssertNotNil(controller.shortcutValidationMessage)
+            XCTAssertNotNil(controller.statusMessage)
+            controller.resizeChord = .defaultResize
+            XCTAssertNil(controller.shortcutValidationMessage)
+            XCTAssertNil(controller.statusMessage)
+            controller.shutdown()
+        }
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    func testShutdownWaitsForBothWindowCleanupAndPendingLogWrites() async throws {
+        let logger = LifecycleActivityLogger(blocksFinish: true)
+        let windows = LifecycleWindowController(blocksReleaseAll: true)
+        let controller = makeController(
+            eventSource: LifecycleEventSource(),
+            windowController: windows,
+            activityLogger: logger
+        )
+        let shutdown = controller.shutdown()
+        var completed = false
+        let observer = Task { await shutdown.value; completed = true }
+        for _ in 0..<300 {
+            if await windows.releaseAllStarted(), logger.finishStarted { break }
+            await Task.yield()
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        XCTAssertTrue(logger.finishStarted)
+        await windows.resumeReleaseAll()
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertFalse(completed)
+        logger.resumeFinish()
+        await observer.value
+        XCTAssertTrue(completed)
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    func testPermissionRefreshCannotRestartMonitoringDuringShutdown() async {
+        let logger = LifecycleActivityLogger(blocksFinish: true)
+        let source = LifecycleEventSource()
+        let controller = makeController(eventSource: source, activityLogger: logger)
+        controller.start()
+        XCTAssertEqual(source.startCount, 1)
+        let completion = controller.shutdown()
+        controller.refreshPermissions()
+        controller.isEnabled = false
+        controller.isEnabled = true
+        XCTAssertEqual(source.startCount, 1)
+        XCTAssertFalse(controller.monitoringActive)
+        XCTAssertFalse(source.isRunning)
+        logger.resumeFinish()
+        await completion.value
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    func testResetShortcutsRestoresAndPersistsDefaultsWithoutIntermediateConflicts() {
+        defaults.set(Int(ModifierChord.defaultSnap.rawValue), forKey: "ordo.shortcut.resize")
+        defaults.set(Int(ModifierChord.defaultMove.rawValue), forKey: "ordo.shortcut.snap")
+        defaults.set(Int(ModifierChord.defaultResize.rawValue), forKey: "ordo.shortcut.move")
+        let source = LifecycleEventSource()
+        let logger = LifecycleActivityLogger()
+        let controller = makeController(eventSource: source, activityLogger: logger)
+        controller.start()
+        let activityCount = logger.entries.count
+
+        controller.resetShortcutsToDefaults()
+
+        XCTAssertEqual(controller.resizeChord, .defaultResize)
+        XCTAssertEqual(controller.snapChord, .defaultSnap)
+        XCTAssertEqual(controller.moveChord, .defaultMove)
+        XCTAssertNil(controller.shortcutValidationMessage)
+        XCTAssertNil(controller.statusMessage)
+        XCTAssertTrue(controller.isOperational)
+        XCTAssertEqual(source.startCount, 1)
+        XCTAssertEqual(logger.entries.count, activityCount)
+        XCTAssertEqual(defaults.integer(forKey: "ordo.shortcut.resize"), Int(ModifierChord.defaultResize.rawValue))
+        XCTAssertEqual(defaults.integer(forKey: "ordo.shortcut.snap"), Int(ModifierChord.defaultSnap.rawValue))
+        XCTAssertEqual(defaults.integer(forKey: "ordo.shortcut.move"), Int(ModifierChord.defaultMove.rawValue))
+
+        let reloaded = makeController(eventSource: LifecycleEventSource())
+        XCTAssertEqual(reloaded.resizeChord, .defaultResize)
+        XCTAssertEqual(reloaded.snapChord, .defaultSnap)
+        XCTAssertEqual(reloaded.moveChord, .defaultMove)
+        reloaded.shutdown()
+        cleanUp(controller)
+    }
+
+    func testResetShortcutsClearsExistingConflictAndPreservesOtherSettings() {
+        let controller = makeController(eventSource: LifecycleEventSource())
+        controller.isEnabled = false
+        controller.setSnapAnimationEnabled(false)
+        controller.resizeChord = controller.moveChord
+        XCTAssertNotNil(controller.shortcutValidationMessage)
+        XCTAssertNotNil(controller.statusMessage)
+
+        controller.resetShortcutsToDefaults()
+
+        XCTAssertEqual(controller.resizeChord, .defaultResize)
+        XCTAssertEqual(controller.snapChord, .defaultSnap)
+        XCTAssertEqual(controller.moveChord, .defaultMove)
+        XCTAssertNil(controller.shortcutValidationMessage)
+        XCTAssertNil(controller.statusMessage)
+        XCTAssertFalse(controller.isEnabled)
+        XCTAssertFalse(controller.isSnapAnimationEnabled)
+        cleanUp(controller)
+    }
+
+    func testResetAlreadyDefaultShortcutsDoesNotRestartMonitoringOrLogWarnings() {
+        let source = LifecycleEventSource()
+        let logger = LifecycleActivityLogger()
+        let controller = makeController(eventSource: source, activityLogger: logger)
+        controller.start()
+        let activityCount = logger.entries.count
+
+        controller.resetShortcutsToDefaults()
+        controller.resetShortcutsToDefaults()
+
+        XCTAssertTrue(controller.isOperational)
+        XCTAssertEqual(source.startCount, 1)
+        XCTAssertEqual(logger.entries.count, activityCount)
+        cleanUp(controller)
+    }
+
     private func makeController(
         eventSource: LifecycleEventSource,
         windowController: LifecycleWindowController = LifecycleWindowController(),
+        activityLogger: any ActivityLogging = LifecycleActivityLogger(),
         accessibilityTrust: @escaping @MainActor (_ prompt: Bool) -> Bool = { _ in true }
     ) -> AppController {
         AppController(
@@ -96,6 +304,7 @@ final class AppControllerLifecycleTests: XCTestCase {
             screenProvider: LifecycleScreenProvider(),
             eventSource: eventSource,
             previewController: LifecyclePreviewDisplay(),
+            activityLogger: activityLogger,
             accessibilityTrust: accessibilityTrust
         )
     }
@@ -103,6 +312,42 @@ final class AppControllerLifecycleTests: XCTestCase {
     private func cleanUp(_ controller: AppController) {
         controller.shutdown()
         defaults.removePersistentDomain(forName: suiteName)
+    }
+}
+
+@MainActor
+private final class LifecycleActivityLogger: ActivityLogging {
+    private(set) var entries: [ActivityLogEntry] = []
+    private(set) var finishStarted = false
+    private let blocksFinish: Bool
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var finishTask: Task<Void, Never>?
+    private var hasResumed = false
+
+    init(blocksFinish: Bool = false) {
+        self.blocksFinish = blocksFinish
+    }
+
+    func append(_ entry: ActivityLogEntry) {
+        entries.append(entry)
+    }
+
+    func finish() -> Task<Void, Never> {
+        if let finishTask { return finishTask }
+        finishStarted = true
+        let task = Task {
+            if blocksFinish, !hasResumed {
+                await withCheckedContinuation { continuation = $0 }
+            }
+        }
+        finishTask = task
+        return task
+    }
+
+    func resumeFinish() {
+        hasResumed = true
+        continuation?.resume()
+        continuation = nil
     }
 }
 
@@ -123,7 +368,7 @@ private final class LifecycleEventSource: EventSource {
     private(set) var epoch: UInt64 = 0
     private(set) var lastError: EventSourceError?
     private(set) var startCount = 0
-    private let startError: EventSourceError?
+    var startError: EventSourceError?
 
     init(startError: EventSourceError? = nil) {
         self.startError = startError

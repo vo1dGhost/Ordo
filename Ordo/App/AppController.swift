@@ -15,11 +15,12 @@ final class AppController: ObservableObject {
         static let hasShownOnboarding = "ordo.onboarding.shown"
     }
 
-    static let shared = AppController()
+    static let shared = AppController(activityLogger: ActivityLoggerFactory.makeDefault())
 
     @Published var isEnabled: Bool {
         didSet {
             guard isEnabled != oldValue else { return }
+            clearStatus()
             defaults.set(isEnabled, forKey: PreferenceKey.enabled)
             if !isEnabled {
                 gestureCoordinator.cancelCurrentSession()
@@ -47,12 +48,6 @@ final class AppController: ObservableObject {
     @Published private(set) var shortcutValidationMessage: String?
     @Published private(set) var statusMessage: String?
     @Published private(set) var monitoringActive = false
-    @Published private(set) var activityLog: [ActivityLogEntry] = []
-
-    var latestActivity: ActivityLogEntry? {
-        activityLog.last
-    }
-
     var isOperational: Bool {
         isEnabled && accessibilityGranted && shortcutValidationMessage == nil && monitoringActive
     }
@@ -77,7 +72,8 @@ final class AppController: ObservableObject {
     private let previewController: any PreviewDisplaying
     private let accessibilityTrust: @MainActor (_ prompt: Bool) -> Bool
     private let accessibilityReduceMotion: @MainActor () -> Bool
-    private var activityLogStore = ActivityLog()
+    private let activityLogger: any ActivityLogging
+    private var statusCategory: ActivityCategory?
 
     private lazy var gestureCoordinator = GestureCoordinator(
         windowController: windowController,
@@ -100,10 +96,11 @@ final class AppController: ObservableObject {
     private var workspaceSleepTask: Task<Void, Never>?
     private var sessionResignTask: Task<Void, Never>?
     private var permissionTimer: Timer?
-    private var onboardingWindow: NSWindow?
+    private var shutdownTask: Task<Void, Never>?
     private var hasStarted = false
     private var lastMonitoringEligibility = false
     private var lastListenerErrorMessage: String?
+    private var isResettingShortcuts = false
 
     init(
         defaults: UserDefaults = .standard,
@@ -111,6 +108,7 @@ final class AppController: ObservableObject {
         screenProvider: any ScreenGeometryProviding = ScreenGeometryProvider(),
         eventSource: any EventSource = InputEventTap(),
         previewController: any PreviewDisplaying = PreviewPanelController(),
+        activityLogger: any ActivityLogging = SilentActivityLogger(),
         accessibilityTrust: @escaping @MainActor (_ prompt: Bool) -> Bool = { prompt in
             AXWindowController.isAccessibilityTrusted(prompt: prompt)
         },
@@ -123,6 +121,7 @@ final class AppController: ObservableObject {
         self.screenProvider = screenProvider
         self.eventSource = eventSource
         self.previewController = previewController
+        self.activityLogger = activityLogger
         self.accessibilityTrust = accessibilityTrust
         self.accessibilityReduceMotion = accessibilityReduceMotion
 
@@ -160,7 +159,7 @@ final class AppController: ObservableObject {
     }
 
     func start() {
-        guard !hasStarted else { return }
+        guard !hasStarted, shutdownTask == nil else { return }
         hasStarted = true
 
         recordActivity(level: .info, category: .app, message: "Ordo 已启动")
@@ -233,11 +232,11 @@ final class AppController: ObservableObject {
         permissionTimer = timer
 
         refreshPermissions()
-        presentOnboardingIfNeeded()
     }
 
     @discardableResult
     func shutdown() -> Task<Void, Never> {
+        if let shutdownTask { return shutdownTask }
         eventTask?.cancel()
         eventTask = nil
         eventFailureTask?.cancel()
@@ -253,9 +252,13 @@ final class AppController: ObservableObject {
         gestureCoordinator.cancelCurrentSession()
         eventSource.stop()
         monitoringActive = false
-        return Task { [windowController] in
+        let logCompletion = activityLogger.finish()
+        let task = Task { [windowController] in
             await windowController.releaseAll()
+            await logCompletion.value
         }
+        shutdownTask = task
+        return task
     }
 
     func requestAccessibility() {
@@ -269,6 +272,7 @@ final class AppController: ObservableObject {
     }
 
     func refreshPermissions() {
+        guard shutdownTask == nil else { return }
         let granted = accessibilityTrust(false)
         if accessibilityGranted != granted {
             accessibilityGranted = granted
@@ -295,20 +299,7 @@ final class AppController: ObservableObject {
 
     func clearStatus() {
         statusMessage = nil
-    }
-
-    func clearActivityLog() {
-        activityLogStore.clear()
-        activityLog = []
-        statusMessage = nil
-    }
-
-    func copyActivityLog() {
-        let contents = activityLogStore.exportPlainText()
-        guard !contents.isEmpty else { return }
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(contents, forType: .string)
+        statusCategory = nil
     }
 
     /// 睡眠或用户会话离开时终止窗口交互并清除失效预览。
@@ -325,19 +316,18 @@ final class AppController: ObservableObject {
         reconcileMonitoring()
     }
 
-    func dismissOnboarding() {
-        onboardingWindow?.close()
-        onboardingWindow = nil
-    }
-
     private func recordActivity(
         level: ActivityLevel,
         category: ActivityCategory,
         message: String
     ) {
-        activityLogStore.append(level: level, category: category, message: message)
-        activityLog = activityLogStore.entries
-        statusMessage = message
+        activityLogger.append(ActivityLogEntry(level: level, category: category, message: message))
+        if level == .info {
+            if category == statusCategory { clearStatus() }
+        } else {
+            statusMessage = message
+            statusCategory = category
+        }
     }
 
     private func recordGestureOutcome(_ outcome: GestureOutcome) {
@@ -348,7 +338,21 @@ final class AppController: ObservableObject {
         )
     }
 
+    /// 三组一起恢复，避免逐项恢复期间的临时冲突停止监听或写入日志。
+    func resetShortcutsToDefaults() {
+        guard resizeChord != .defaultResize
+                || snapChord != .defaultSnap
+                || moveChord != .defaultMove else { return }
+        isResettingShortcuts = true
+        resizeChord = .defaultResize
+        snapChord = .defaultSnap
+        moveChord = .defaultMove
+        isResettingShortcuts = false
+        shortcutsDidChange()
+    }
+
     private func shortcutsDidChange() {
+        guard !isResettingShortcuts else { return }
         let previousMessage = shortcutValidationMessage
         shortcutValidationMessage = Self.validationMessage(
             resize: resizeChord,
@@ -370,6 +374,9 @@ final class AppController: ObservableObject {
             return
         }
 
+        if let previousMessage, statusMessage == previousMessage {
+            clearStatus()
+        }
         defaults.set(Int(resizeChord.rawValue), forKey: PreferenceKey.resizeChord)
         defaults.set(Int(snapChord.rawValue), forKey: PreferenceKey.snapChord)
         defaults.set(Int(moveChord.rawValue), forKey: PreferenceKey.moveChord)
@@ -382,6 +389,7 @@ final class AppController: ObservableObject {
     }
 
     private func reconcileMonitoring() {
+        guard shutdownTask == nil else { return }
         let shouldRun = isEnabled
             && accessibilityGranted
             && shortcutValidationMessage == nil
@@ -444,27 +452,12 @@ final class AppController: ObservableObject {
         recordActivity(level: .error, category: .listener, message: message)
     }
 
-    private func presentOnboardingIfNeeded() {
-        guard !defaults.bool(forKey: PreferenceKey.hasShownOnboarding) else { return }
+    /// 等待 SwiftUI 场景入口可用后，首启复用主窗口；此处不申请权限。
+    func presentInitialWindowIfNeeded(openWindow: () -> Void) {
+        guard shutdownTask == nil,
+              !defaults.bool(forKey: PreferenceKey.hasShownOnboarding) else { return }
         defaults.set(true, forKey: PreferenceKey.hasShownOnboarding)
-
-        let rootView = PermissionOnboardingView(controller: self)
-        let hostingController = NSHostingController(rootView: rootView)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 496, height: 520),
-            styleMask: [.titled, .closable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "欢迎使用 Ordo"
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.isReleasedWhenClosed = false
-        window.contentViewController = hostingController
-        window.center()
-        window.makeKeyAndOrderFront(nil)
-        onboardingWindow = window
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        openWindow()
     }
 
     private static func loadChord(

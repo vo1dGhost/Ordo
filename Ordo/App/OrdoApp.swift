@@ -10,22 +10,35 @@ struct OrdoApp: App {
         MenuBarExtra {
             MenuBarContent(controller: controller)
         } label: {
-            Label(
-                "Ordo",
-                image: controller.isOperational
-                    ? "MenuBarIconActive"
-                    : "MenuBarIconInactive"
-            )
-            .accessibilityLabel(controller.isOperational ? "Ordo 正在运行" : "Ordo 未运行")
+            MenuBarStatusLabel(controller: controller)
         }
         .menuBarExtraStyle(.menu)
 
         Window("Ordo", id: "main") {
             MainView(controller: controller)
-                .frame(minWidth: 700, minHeight: 500)
+                .frame(minWidth: 520, minHeight: 500)
         }
-        .defaultSize(width: 780, height: 560)
+        .defaultSize(width: 560, height: 680)
         .windowResizability(.contentMinSize)
+    }
+}
+
+private struct MenuBarStatusLabel: View {
+    @ObservedObject var controller: AppController
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Label(
+            "Ordo",
+            image: controller.isOperational ? "MenuBarIconActive" : "MenuBarIconInactive"
+        )
+        .accessibilityLabel(controller.isOperational ? "Ordo 正在运行" : "Ordo 未运行")
+        .task {
+            guard !ActivityLoggerFactory.isRunningTests else { return }
+            controller.presentInitialWindowIfNeeded {
+                MainWindowPresentation.open(using: openWindow)
+            }
+        }
     }
 }
 
