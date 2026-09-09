@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="Artwork/AppIconConcepts/02_FocusedSnap/IconComposerPreviews/default-128.png" width="128" height="128" alt="Ordo 图标">
+  <img src="Artwork/AppIconConcepts/02_FocusedSnap/IconComposerPreviews/default.png" width="128" height="128" alt="Ordo 图标">
 </p>
 
 <h1 align="center">Ordo</h1>
@@ -17,6 +17,28 @@ Ordo 是一款原生 macOS 菜单栏窗口管理器，让你直接在窗口上�
 - **八向排布**：选择半屏、四角、铺满可见区域或居中布局，松键应用。
 - **菜单栏常驻**：随时启用或暂停，不占用 Dock 位置。
 - **按习惯设置**：自定义三组组合键、一键恢复默认，并选择是否启用排布动画。
+
+## 功能演示
+
+以下为使用 Keynote 制作的功能示意动画。将鼠标放在窗口上，按住对应组合键并移动即可，无需按鼠标按钮。
+
+### 自由移动 `⌃⇧`
+
+窗口跟随鼠标移动，尺寸保持不变。
+
+<img src="Artwork/Demos/move.gif" width="800" alt="自由移动示意：按住 Control 和 Shift，窗口随鼠标向右上移动，再返回原位">
+
+### 调整大小 `⌥⇧`
+
+左上角保持固定，向右下移动鼠标放大窗口，回移恢复原始尺寸。
+
+<img src="Artwork/Demos/resize.gif" width="800" alt="调整大小示意：按住 Option 和 Shift，固定左上角，移动鼠标放大窗口并恢复原始尺寸">
+
+### 八向排布 `⌘⌃`
+
+按住组合键选择方向并预览，松键应用：居中 75% → 左上四分之一屏 → 右半屏 → 居中 75%。居中布局的宽、高各为屏幕可见区域的 75%。
+
+<img src="Artwork/Demos/snap.gif" width="800" alt="八向排布示意：按住 Command 和 Control 选择方向，松键后依次应用左上四分之一屏、右半屏和居中百分之七十五布局">
 
 ## 开始使用
 
