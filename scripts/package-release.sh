@@ -71,6 +71,8 @@ fi
 step=签名与验证
 app="$staging_dir/Ordo.app"
 ditto "$run_dir/Products/Ordo.app" "$app"
+# 移除包含源码与中间产物绝对路径的调试索引，仅处理分发副本。
+xcrun strip -S "$app/Contents/MacOS/Ordo"
 codesign --force --sign - --options runtime --timestamp=none "$app"
 
 verify_app() {
@@ -79,6 +81,9 @@ verify_app() {
     codesign --verify --deep --strict --all-architectures "$candidate"
     actual=$(lipo -archs "$candidate/Contents/MacOS/Ordo")
     [[ "$actual" == 'x86_64 arm64' || "$actual" == 'arm64 x86_64' ]] || fail "产物不是预期的 Universal 2：$actual"
+    if LC_ALL=C grep -a -Eq '/Users/|/private/var/folders/' "$candidate/Contents/MacOS/Ordo"; then
+        fail "$label 的可执行文件仍包含本机用户或临时目录路径。"
+    fi
     while IFS='=' read -r key expected; do
         actual=$(/usr/libexec/PlistBuddy -c "Print :$key" "$plist")
         [[ "$actual" == "$expected" ]] || fail "$label 的 $key 不符：$actual"

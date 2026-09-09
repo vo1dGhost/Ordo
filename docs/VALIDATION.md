@@ -5,6 +5,7 @@
 - macOS 26.6.2、Xcode 26.6，在当前 Apple Silicon Mac 执行安全 XCTest：**187 项通过、0 失败、0 跳过**；Debug 构建通过。
 - 显式排除 `AXWindowCompatibilityTests.testCurrentProcessSwiftUIWindowCanBeCapturedRaisedMovedAndResized`，未将该项真实 AX 操作记为通过；下载后窗口手势另行实机验收。
 - 当前源码、main 历史文本及 47 个 PNG 元数据检查未发现凭据或个人绝对路径。提交身份保留维护者明确选择公开的新邮箱，本机归档由 `build/` 忽略规则覆盖。
+- 首个 Universal 2 候选的调试索引包含本机源码路径，产物审计拦截后未上传。分发流程现于签名前剥离调试符号，并对 staging 与 DMG 内的可执行文件检查用户及临时目录路径；原始候选保留供本机复核。
 - 本节记录发布前的源码与测试检查，不代表已完成 Release 下载、全新安装或 Intel／其他 macOS 版本实机验证。
 
 本机证据位于 `build/ReleasePreparation/20260909-185120-703068/`，含工作区及 Git 备份、隐私审计报告、`tests.log`、`Tests.xcresult` 与 `test-summary.json`。备份和证据不随仓库公开。
