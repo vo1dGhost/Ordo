@@ -146,43 +146,104 @@ final class MainWindowPresentation {
 
 @MainActor
 enum MainWindowBehavior {
+    static let contentSize = NSSize(width: 560, height: 500)
+
     static func apply(to window: NSWindow) {
-        window.collectionBehavior.remove(.canJoinAllSpaces)
-        window.collectionBehavior.insert(.moveToActiveSpace)
-        // 由系统工具栏布局标题，避免紧凑标题栏将原生标题固定在左侧。
-        if !(window.toolbar is MainWindowTitleToolbar) {
-            window.toolbar = MainWindowTitleToolbar(window: window)
+        window.collectionBehavior.subtract([.canJoinAllSpaces, .fullScreenPrimary, .fullScreenAuxiliary, .fullScreenAllowsTiling])
+        window.collectionBehavior.formUnion([.moveToActiveSpace, .fullScreenNone, .fullScreenDisallowsTiling])
+        // 保留 SwiftUI 选择的 fullSizeContentView，让宿主继续计算标题栏安全区域。
+        window.styleMask.remove(.resizable)
+        window.tabbingMode = .disallowed
+        if !(window.toolbar is MainWindowToolbar) {
+            window.toolbar = MainWindowToolbar()
         }
-        window.toolbarStyle = .unifiedCompact
-        window.titleVisibility = .hidden
+        window.toolbarStyle = .expanded
+        // 文字已经位于原生分段控件内，不再在下方重复显示工具栏标签。
+        window.toolbar?.displayMode = .iconOnly
+        window.titleVisibility = .visible
+        // 标题栏与页面共用底色，只让分页胶囊保留独立的玻璃材质。
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        window.backgroundColor = .windowBackgroundColor
+        let currentContent = window.contentRect(forFrameRect: window.frame).size
+        let titlebarInset = max(0, currentContent.height - window.contentLayoutRect.height)
+        let fixedContent = NSSize(width: contentSize.width, height: contentSize.height + titlebarInset)
+        window.contentMinSize = fixedContent
+        window.contentMaxSize = fixedContent
+        // 同时覆盖旧版恢复的窗口尺寸；工具栏与标题栏不占用页面的 500 pt。
+        window.setContentSize(fixedContent)
+        window.standardWindowButton(.zoomButton)?.isEnabled = false
     }
 }
 
 @MainActor
-private final class MainWindowTitleToolbar: NSToolbar, NSToolbarDelegate {
-    private let titleItem: NSToolbarItem
-    private let titleLabel: NSTextField
+final class MainWindowToolbar: NSToolbar, NSToolbarDelegate {
+    private static let pagesIdentifier = NSToolbarItem.Identifier("Ordo.Pages")
+    var onSelection: ((MainWindowPage) -> Void)?
 
-    init(window: NSWindow) {
-        titleItem = NSToolbarItem(itemIdentifier: NSToolbarItem.Identifier("Ordo.WindowTitle"))
-        titleLabel = NSTextField(labelWithString: window.title)
-        titleLabel.font = .systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
-        titleLabel.alignment = .center
-        titleLabel.bind(.value, to: window, withKeyPath: "title", options: nil)
-        titleItem.label = window.title
-        titleItem.view = titleLabel
-        super.init(identifier: "Ordo.MainWindowTitle")
+    var selectedPage: MainWindowPage {
+        get {
+            let pages = MainWindowPage.allCases
+            return pages.indices.contains(pageControl.selectedSegment) ? pages[pageControl.selectedSegment] : .basic
+        }
+        set {
+            pageControl.selectedSegment = MainWindowPage.allCases.firstIndex(of: newValue) ?? 0
+        }
+    }
+
+    private lazy var pageControl: NSSegmentedControl = {
+        let control = MainWindowPageControl(
+            labels: MainWindowPage.allCases.map(\.title),
+            trackingMode: .selectOne,
+            target: self,
+            action: #selector(selectPage(_:))
+        )
+        control.selectedSegment = 0
+        control.segmentStyle = .automatic
+        if #available(macOS 26.0, *) {
+            control.borderShape = .capsule
+        }
+        if #available(macOS 27.0, *) {
+            control.role = .tabs
+        }
+        // 由 AppKit 决定玻璃材质、选中底色和辅助功能外观，旧系统沿用原生样式。
+        control.setAccessibilityLabel("分页")
+        control.setAccessibilityIdentifier("ordo.pages")
+        for index in MainWindowPage.allCases.indices {
+            control.setWidth(72, forSegment: index)
+            control.setToolTip(MainWindowPage.allCases[index].title, forSegment: index)
+        }
+        control.sizeToFit()
+        return control
+    }()
+
+    private lazy var pageItem: NSToolbarItem = {
+        let item = NSToolbarItem(itemIdentifier: Self.pagesIdentifier)
+        item.label = "分页"
+        item.paletteLabel = "分页"
+        item.view = pageControl
+        item.autovalidates = false
+        return item
+    }()
+
+    init() {
+        super.init(identifier: "Ordo.MainWindowPages")
         delegate = self
-        centeredItemIdentifiers = [titleItem.itemIdentifier]
         displayMode = .iconOnly
+        allowsUserCustomization = false
+        autosavesConfiguration = false
+        if #available(macOS 15.0, *) {
+            allowsDisplayModeCustomization = false
+        }
+        centeredItemIdentifiers = [Self.pagesIdentifier]
     }
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [titleItem.itemIdentifier]
+        [Self.pagesIdentifier]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [titleItem.itemIdentifier]
+        toolbarDefaultItemIdentifiers(toolbar)
     }
 
     func toolbar(
@@ -190,22 +251,61 @@ private final class MainWindowTitleToolbar: NSToolbar, NSToolbarDelegate {
         itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
         willBeInsertedIntoToolbar flag: Bool
     ) -> NSToolbarItem? {
-        itemIdentifier == titleItem.itemIdentifier ? titleItem : nil
+        itemIdentifier == Self.pagesIdentifier ? pageItem : nil
+    }
+
+    @objc private func selectPage(_ sender: NSSegmentedControl) {
+        guard MainWindowPage.allCases.indices.contains(sender.selectedSegment) else { return }
+        onSelection?(MainWindowPage.allCases[sender.selectedSegment])
+    }
+}
+
+/// 焦点位于分页控件时，左右键与点击共用同一个选择入口。
+@MainActor
+private final class MainWindowPageControl: NSSegmentedControl {
+    override func keyDown(with event: NSEvent) {
+        guard event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+              event.keyCode == 123 || event.keyCode == 124 else {
+            super.keyDown(with: event)
+            return
+        }
+        let next = min(max(selectedSegment + (event.keyCode == 124 ? 1 : -1), 0), segmentCount - 1)
+        guard next != selectedSegment else { return }
+        selectedSegment = next
+        if let action { sendAction(action, to: target) }
     }
 }
 
 @MainActor
 struct MainWindowConfigurator: NSViewRepresentable {
+    @ObservedObject var controller: AppController
+
     func makeNSView(context: Context) -> NSView {
-        MainWindowObserverView()
+        MainWindowObserverView(controller: controller)
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func updateNSView(_ nsView: NSView, context: Context) {
+        (nsView as? MainWindowObserverView)?.updateSelection()
+    }
 }
 
 @MainActor
 private final class MainWindowObserverView: NSView {
     private weak var observedWindow: NSWindow?
+    private let controller: AppController
+
+    init(controller: AppController) {
+        self.controller = controller
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { nil }
+
+    func updateSelection() {
+        guard let toolbar = window?.toolbar as? MainWindowToolbar else { return }
+        toolbar.selectedPage = controller.mainWindowPage
+        toolbar.onSelection = { [weak controller] page in controller?.mainWindowPage = page }
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -227,6 +327,7 @@ private final class MainWindowObserverView: NSView {
             object: window
         )
         MainWindowPresentation.shared.register(window)
+        updateSelection()
     }
 
     @objc private func windowWillClose(_ notification: Notification) {

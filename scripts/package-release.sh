@@ -51,6 +51,7 @@ git -C "$repo_root" archive --format=tar "$commit" | tar -xf - -C "$source_dir"
 [[ -f "$source_dir/Ordo.xcodeproj/xcshareddata/xcschemes/Ordo.xcscheme" ]] || fail '指定提交缺少共享 Ordo scheme。'
 project="$source_dir/Ordo.xcodeproj/project.pbxproj"
 settings=objects.I00000000000000000000012.buildSettings
+bundle_id=$(plutil -extract "$settings.PRODUCT_BUNDLE_IDENTIFIER" raw -- "$project")
 version=$(plutil -extract "$settings.MARKETING_VERSION" raw -- "$project")
 build_number=$(plutil -extract "$settings.CURRENT_PROJECT_VERSION" raw -- "$project")
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$build_number" =~ ^[0-9]+$ ]] || fail '版本必须为三段数字，构建号必须为整数。'
@@ -88,7 +89,7 @@ verify_app() {
         actual=$(/usr/libexec/PlistBuddy -c "Print :$key" "$plist")
         [[ "$actual" == "$expected" ]] || fail "$label 的 $key 不符：$actual"
     done <<EOF
-CFBundleIdentifier=com.ghost7.Ordo
+CFBundleIdentifier=$bundle_id
 CFBundleExecutable=Ordo
 CFBundleShortVersionString=$version
 CFBundleVersion=$build_number

@@ -53,16 +53,70 @@ final class AXWindowCompatibilityTests: XCTestCase {
         let controller = AXWindowController()
         let captured = try await controller.captureWindow(at: quartzPoint, for: .move)
 
-        XCTAssertEqual(captured.pid, ProcessInfo.processInfo.processIdentifier)
-        try await controller.raiseWindow(captured)
-        let moved = try await controller.setPosition(
-            CGPoint(x: captured.frame.minX + 8, y: captured.frame.minY + 8),
-            of: captured
-        )
-        _ = try await controller.setSize(
-            CGSize(width: moved.frame.width + 8, height: moved.frame.height + 8),
-            of: moved
-        )
+        try await exerciseSelfWindow(captured, using: controller, expectedPID: ProcessInfo.processInfo.processIdentifier)
+    }
+
+    @MainActor
+    func testSelfWindowProbeRejectsForeignProcessBeforeAnyWrite() async throws {
+        let controller = SelfWindowProbeController()
+        let captured = WindowSnapshot(id: UUID(), frame: CGRect(x: 0, y: 0, width: 360, height: 180), pid: 42)
+        do {
+            try await exerciseSelfWindow(captured, using: controller, expectedPID: 7)
+            XCTFail("误命中外部进程必须以失败结束，不能继续操作")
+        } catch let error as SelfWindowProbeError {
+            XCTAssertEqual(error, .unexpectedProcess(expected: 7, actual: 42))
+        }
+        let operations = await controller.operations
+        XCTAssertEqual(operations, ["release"])
+    }
+
+    @MainActor
+    func testSelfWindowProbeAcceptsOwnedWindowAndReleasesOnce() async throws {
+        let controller = SelfWindowProbeController()
+        let captured = WindowSnapshot(id: UUID(), frame: CGRect(x: 0, y: 0, width: 360, height: 180), pid: 7)
+        try await exerciseSelfWindow(captured, using: controller, expectedPID: 7)
+        let operations = await controller.operations
+        XCTAssertEqual(operations, ["raise", "position", "size", "release"])
+    }
+
+    @MainActor
+    func testSelfWindowProbeReleasesCapturedWindowWhenAWriteFails() async throws {
+        let controller = SelfWindowProbeController(failsPositionWrite: true)
+        let captured = WindowSnapshot(id: UUID(), frame: CGRect(x: 0, y: 0, width: 360, height: 180), pid: 7)
+        do {
+            try await exerciseSelfWindow(captured, using: controller, expectedPID: 7)
+            XCTFail("替身的位置写入应失败")
+        } catch let error as SelfWindowProbeError {
+            XCTAssertEqual(error, .writeFailed)
+        }
+        let operations = await controller.operations
+        XCTAssertEqual(operations, ["raise", "position", "release"])
+    }
+
+    @MainActor
+    private func exerciseSelfWindow(
+        _ captured: WindowSnapshot,
+        using controller: any WindowControlling,
+        expectedPID: pid_t
+    ) async throws {
+        do {
+            // XCTest 断言不会终止执行；身份不符必须在任何窗口写入之前抛出失败。
+            guard captured.pid == expectedPID else {
+                throw SelfWindowProbeError.unexpectedProcess(expected: expectedPID, actual: captured.pid)
+            }
+            try await controller.raiseWindow(captured)
+            let moved = try await controller.setPosition(
+                CGPoint(x: captured.frame.minX + 8, y: captured.frame.minY + 8),
+                of: captured
+            )
+            _ = try await controller.setSize(
+                CGSize(width: moved.frame.width + 8, height: moved.frame.height + 8),
+                of: moved
+            )
+        } catch {
+            await controller.release(captured)
+            throw error
+        }
         await controller.release(captured)
     }
 
@@ -304,6 +358,41 @@ private extension AXWindowController {
     func isExecutingOnMainThreadForTesting() -> Bool {
         Thread.isMainThread
     }
+}
+
+private enum SelfWindowProbeError: Error, Equatable {
+    case unexpectedProcess(expected: pid_t, actual: pid_t)
+    case writeFailed
+}
+
+private actor SelfWindowProbeController: WindowControlling {
+    private(set) var operations: [String] = []
+    private let failsPositionWrite: Bool
+
+    init(failsPositionWrite: Bool = false) {
+        self.failsPositionWrite = failsPositionWrite
+    }
+
+    func captureWindow(at point: CGPoint, for mode: InteractionMode) async throws -> WindowSnapshot {
+        WindowSnapshot(id: UUID(), frame: .zero, pid: 7)
+    }
+    func currentFrame(of window: WindowSnapshot) async throws -> CGRect { window.frame }
+    func raiseWindow(_ window: WindowSnapshot) async throws { operations.append("raise") }
+    func setPosition(_ position: CGPoint, of window: WindowSnapshot) async throws -> WindowSnapshot {
+        operations.append("position")
+        if failsPositionWrite { throw SelfWindowProbeError.writeFailed }
+        return window
+    }
+    func setSize(_ size: CGSize, of window: WindowSnapshot) async throws -> WindowSnapshot {
+        operations.append("size")
+        return window
+    }
+    func applyFrame(_ frame: CGRect, to window: WindowSnapshot, transition: WindowFrameTransition) async throws -> WindowSnapshot {
+        operations.append("frame")
+        return window
+    }
+    func release(_ window: WindowSnapshot) async { operations.append("release") }
+    func releaseAll() async {}
 }
 
 @MainActor

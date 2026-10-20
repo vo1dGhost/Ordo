@@ -430,6 +430,73 @@ final class PreviewPanelControllerTests: XCTestCase {
         XCTAssertFalse(markerPanels[0] === markerPanels[1])
     }
 
+    func testCachedLayoutOutsideActiveSpaceIsReplacedWhetherVisibleOrHidden() throws {
+        for remainsVisible in [true, false] {
+            var panels: [TrackingPreviewPanel] = []
+            let controller = PreviewPanelController(
+                panelFactory: {
+                    let panel = TrackingPreviewPanel()
+                    panels.append(panel)
+                    return panel
+                },
+                markerPanelFactory: { TrackingPreviewPanel() },
+                accessibilityReduceMotion: { false }
+            )
+            defer { controller.invalidate() }
+            controller.show(layout: .right, targetFrame: screen.visibleFrame, screen: screen)
+            let oldPanel = try XCTUnwrap(panels.first)
+            let oldHost = try XCTUnwrap(oldPanel.contentViewController)
+            if !remainsVisible { controller.hideLayout() }
+            XCTAssertEqual(oldPanel.isVisible, remainsVisible)
+            oldPanel.simulatedIsOnActiveSpace = false
+
+            controller.show(layout: .right, targetFrame: screen.visibleFrame, screen: screen)
+
+            let newPanel = try XCTUnwrap(panels.last)
+            XCTAssertEqual(panels.count, 2)
+            XCTAssertFalse(oldPanel === newPanel)
+            XCTAssertEqual(oldPanel.closeCallCount, 1)
+            XCTAssertNil(oldPanel.contentViewController)
+            XCTAssertFalse(oldHost === newPanel.contentViewController)
+            XCTAssertTrue(newPanel.isVisible)
+            XCTAssertTrue(newPanel.isOnActiveSpace)
+            XCTAssertEqual(newPanel.orderFrontCallCount, 1)
+            XCTAssertNotNil(newPanel.contentViewController?.view.layer?.animation(
+                forKey: PreviewPanelController.presentationAnimationKey
+            ))
+        }
+    }
+
+    func testNextGestureReplacesOriginMarkerOutsideActiveSpace() throws {
+        var panels: [TrackingPreviewPanel] = []
+        let controller = PreviewPanelController(
+            panelFactory: { TrackingPreviewPanel() },
+            markerPanelFactory: {
+                let panel = TrackingPreviewPanel()
+                panels.append(panel)
+                return panel
+            }
+        )
+        defer { controller.invalidate() }
+        controller.showOriginMarker(at: CGPoint(x: 100, y: 200), screen: screen)
+        let oldPanel = try XCTUnwrap(panels.first)
+        controller.hide()
+        oldPanel.simulatedIsOnActiveSpace = false
+
+        controller.showOriginMarker(at: CGPoint(x: 300, y: 400), screen: screen)
+
+        let newPanel = try XCTUnwrap(panels.last)
+        XCTAssertEqual(panels.count, 2)
+        XCTAssertFalse(oldPanel === newPanel)
+        XCTAssertEqual(oldPanel.closeCallCount, 1)
+        XCTAssertNil(oldPanel.contentViewController)
+        XCTAssertEqual(newPanel.frame, CGRect(x: 280, y: 380, width: 40, height: 40))
+        XCTAssertNil(try markerHost(in: newPanel).rootView.selectedLayout)
+        XCTAssertTrue(newPanel.isVisible)
+        XCTAssertTrue(newPanel.isOnActiveSpace)
+        XCTAssertEqual(newPanel.orderFrontCallCount, 1)
+    }
+
     private func markerHost(in panel: NSPanel) throws -> NSHostingController<SnapOriginMarkerView> {
         try XCTUnwrap(panel.contentViewController as? NSHostingController<SnapOriginMarkerView>)
     }
@@ -494,6 +561,9 @@ private final class TrackingPreviewPanel: NSPanel {
     private(set) var orderFrontContentCounts: [Int] = []
     private(set) var orderOutCallCount = 0
     private(set) var closeCallCount = 0
+    var simulatedIsOnActiveSpace = true
+
+    override var isOnActiveSpace: Bool { simulatedIsOnActiveSpace }
 
     init() {
         super.init(

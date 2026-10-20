@@ -7,7 +7,7 @@ final class WindowFrameAnimationTests: XCTestCase {
 
     func testSnapDefaultUsesExpectedTiming() {
         XCTAssertEqual(animation.duration, .milliseconds(200))
-        XCTAssertEqual(animation.frameInterval, .nanoseconds(16_666_667))
+        XCTAssertEqual(animation.frameInterval, .nanoseconds(8_333_334))
         XCTAssertEqual(WindowFrameTransition.animated(animation), .animated(.snapDefault))
     }
 
@@ -33,17 +33,17 @@ final class WindowFrameAnimationTests: XCTestCase {
         )
     }
 
-    func testFirstSixtyHertzSampleMovesAboutTwoPercent() {
+    func testFirstOneHundredTwentyHertzSampleMovesAboutHalfAPercent() {
         let frame = animation.interpolatedFrame(
             from: CGRect(x: 0, y: 0, width: 100, height: 100),
             to: CGRect(x: 100, y: 100, width: 200, height: 200),
-            progress: 16_666_667.0 / 200_000_000.0
+            progress: 8_333_334.0 / 200_000_000.0
         )
 
-        XCTAssertEqual(frame.origin.x, 1.96759267, accuracy: 0.000001)
-        XCTAssertEqual(frame.origin.y, 1.96759267, accuracy: 0.000001)
-        XCTAssertEqual(frame.width, 101.96759267, accuracy: 0.000001)
-        XCTAssertEqual(frame.height, 101.96759267, accuracy: 0.000001)
+        XCTAssertEqual(frame.origin.x, 0.50636582, accuracy: 0.000001)
+        XCTAssertEqual(frame.origin.y, 0.50636582, accuracy: 0.000001)
+        XCTAssertEqual(frame.width, 100.50636582, accuracy: 0.000001)
+        XCTAssertEqual(frame.height, 100.50636582, accuracy: 0.000001)
     }
 
     func testInterpolationSupportsNegativeMultiScreenCoordinates() {
@@ -61,52 +61,63 @@ final class WindowFrameAnimationTests: XCTestCase {
     func testNextSampleDeadlineUsesAbsoluteTimeGridForDifferentWriteDurations() {
         XCTAssertEqual(
             animation.nextSampleDeadline(after: .zero),
-            .nanoseconds(16_666_667)
+            .nanoseconds(8_333_334)
         )
         XCTAssertEqual(
             animation.nextSampleDeadline(after: .milliseconds(5)),
-            .nanoseconds(16_666_667)
+            .nanoseconds(8_333_334)
         )
         XCTAssertEqual(
-            animation.nextSampleDeadline(after: .nanoseconds(16_666_667)),
-            .nanoseconds(33_333_334)
+            animation.nextSampleDeadline(after: .nanoseconds(8_333_334)),
+            .nanoseconds(16_666_668)
         )
         XCTAssertEqual(
             animation.nextSampleDeadline(after: .milliseconds(20)),
-            .nanoseconds(33_333_334)
+            .nanoseconds(25_000_002)
         )
         XCTAssertEqual(
             animation.nextSampleDeadline(after: .milliseconds(40)),
-            .nanoseconds(50_000_001)
+            .nanoseconds(41_666_670)
         )
     }
 
     func testNextSampleDeadlineSkipsExpiredFramesWithoutCatchingUp() {
         XCTAssertEqual(
             animation.nextSampleDeadline(after: .milliseconds(40)),
-            .nanoseconds(50_000_001)
+            .nanoseconds(41_666_670)
         )
         XCTAssertEqual(
             animation.nextSampleDeadline(after: .milliseconds(120)),
-            .nanoseconds(133_333_336)
+            .nanoseconds(125_000_010)
         )
     }
 
     func testNextSampleDeadlineIsStrictlyAfterExactGridPoint() {
         XCTAssertEqual(
-            animation.nextSampleDeadline(after: .nanoseconds(16_666_667)),
-            .nanoseconds(33_333_334)
+            animation.nextSampleDeadline(after: .nanoseconds(8_333_334)),
+            .nanoseconds(16_666_668)
         )
     }
 
     func testNextSampleDeadlineDoesNotReturnAnimationEndpoint() {
         XCTAssertEqual(
-            animation.nextSampleDeadline(after: .nanoseconds(183_333_336)),
-            .nanoseconds(183_333_337)
+            animation.nextSampleDeadline(after: .nanoseconds(191_666_681)),
+            .nanoseconds(191_666_682)
         )
-        XCTAssertNil(animation.nextSampleDeadline(after: .nanoseconds(183_333_337)))
+        XCTAssertNil(animation.nextSampleDeadline(after: .nanoseconds(191_666_682)))
         XCTAssertNil(animation.nextSampleDeadline(after: .milliseconds(199)))
         XCTAssertNil(animation.nextSampleDeadline(after: .milliseconds(200)))
+    }
+
+    func testTwoHundredMillisecondAnimationHasTwentyThreeIntermediateSamples() {
+        var elapsed = Duration.zero
+        var samples = 0
+        while let deadline = animation.nextSampleDeadline(after: elapsed) {
+            samples += 1
+            elapsed = deadline
+        }
+        // 23 个中间采样加最终精确提交；慢 AX 调用仍直接跳过过期采样。
+        XCTAssertEqual(samples, 23)
     }
 
     func testInterpolationIsMonotonicAndNeverOvershoots() {

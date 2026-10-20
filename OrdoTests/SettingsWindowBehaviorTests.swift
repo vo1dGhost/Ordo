@@ -4,6 +4,21 @@ import XCTest
 
 @MainActor
 final class MainWindowBehaviorTests: XCTestCase {
+    func testFixedWindowOverridesOldSizeAndDisablesResizing() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 900),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        MainWindowBehavior.apply(to: window)
+        XCTAssertEqual(window.contentLayoutRect.size, NSSize(width: 560, height: 500))
+        XCTAssertFalse(window.styleMask.contains(.resizable))
+        XCTAssertTrue(window.collectionBehavior.contains(.fullScreenNone))
+        XCTAssertEqual(window.contentMinSize, window.contentMaxSize)
+        XCTAssertEqual(window.toolbarStyle, .expanded)
+    }
+
     func testOpeningWaitsForMenuTurnAndWindowBeforeRequestingActivation() {
         let probe = PresentationProbe()
         probe.presentation.open { probe.openCount += 1 }
@@ -328,7 +343,7 @@ final class MainWindowBehaviorTests: XCTestCase {
         XCTAssertTrue(window.collectionBehavior.contains(.fullScreenNone))
     }
 
-    func testApplyCentersTitleInSystemToolbarWithoutChangingWindowControlsOrLevel() throws {
+    func testTextPageGroupKeepsWindowTitleAndCloseControls() throws {
         let styleMask: NSWindow.StyleMask = [
             .titled, .closable, .miniaturizable, .resizable, .fullSizeContentView,
         ]
@@ -346,17 +361,23 @@ final class MainWindowBehaviorTests: XCTestCase {
         MainWindowBehavior.apply(to: window)
 
         let toolbar = try XCTUnwrap(window.toolbar)
-        let titleItem = try XCTUnwrap(toolbar.items.first)
-        let titleLabel = try XCTUnwrap(titleItem.view as? NSTextField)
         XCTAssertEqual(toolbar.items.count, 1)
-        XCTAssertEqual(toolbar.centeredItemIdentifiers, [titleItem.itemIdentifier])
-        XCTAssertEqual(titleLabel.stringValue, "Ordo")
-        XCTAssertFalse(titleLabel.isEditable)
-        XCTAssertFalse(titleLabel.isBordered)
-        XCTAssertEqual(window.toolbarStyle, .unifiedCompact)
-        XCTAssertEqual(window.titleVisibility, .hidden)
+        let item = try XCTUnwrap(toolbar.items.first)
+        let control = try XCTUnwrap(item.view as? NSSegmentedControl)
+        XCTAssertEqual((0..<control.segmentCount).map { control.label(forSegment: $0) }, ["基础", "功能", "关于"])
+        XCTAssertTrue((0..<control.segmentCount).allSatisfy { control.image(forSegment: $0) == nil })
+        XCTAssertEqual(control.trackingMode, .selectOne)
+        XCTAssertEqual(control.accessibilityLabel(), "分页")
+        XCTAssertTrue(control.acceptsFirstResponder)
+        XCTAssertEqual(toolbar.centeredItemIdentifiers, [item.itemIdentifier])
+        XCTAssertEqual(toolbar.displayMode, .iconOnly)
+        XCTAssertFalse(toolbar.allowsUserCustomization)
+        XCTAssertEqual(window.toolbarStyle, .expanded)
+        XCTAssertEqual(window.titleVisibility, .visible)
+        XCTAssertTrue(window.titlebarAppearsTransparent)
+        XCTAssertEqual(window.titlebarSeparatorStyle, .none)
         XCTAssertEqual(window.title, "Ordo")
-        XCTAssertEqual(window.styleMask, styleMask)
+        XCTAssertFalse(window.styleMask.contains(.resizable))
         XCTAssertEqual(window.level, .normal)
         XCTAssertNotNil(window.standardWindowButton(.closeButton))
         XCTAssertNotNil(window.standardWindowButton(.miniaturizeButton))
@@ -364,7 +385,7 @@ final class MainWindowBehaviorTests: XCTestCase {
         XCTAssertFalse(window.isVisible)
     }
 
-    func testRepeatedTitleConfigurationReusesToolbarAndPreservesCurrentWindowTitle() throws {
+    func testToolbarSelectionChangesPageAndRepeatedConfigurationPreservesIt() throws {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 560, height: 680),
             styleMask: [.titled, .closable],
@@ -373,18 +394,61 @@ final class MainWindowBehaviorTests: XCTestCase {
         )
         window.title = "Ordo"
         MainWindowBehavior.apply(to: window)
-        let toolbar = try XCTUnwrap(window.toolbar)
+        let toolbar = try XCTUnwrap(window.toolbar as? MainWindowToolbar)
+        var selectedPages: [MainWindowPage] = []
+        toolbar.onSelection = { selectedPages.append($0) }
+        let control = try XCTUnwrap(toolbar.items.first?.view as? NSSegmentedControl)
+        control.selectedSegment = 2
+        let action = try XCTUnwrap(control.action)
+        XCTAssertTrue(control.sendAction(action, to: control.target))
+        XCTAssertEqual(selectedPages, [.about])
+        XCTAssertEqual(toolbar.selectedPage, .about)
+        let size = window.frame.size
 
         window.title = "Ordo 测试窗口"
-        XCTAssertEqual((toolbar.items.first?.view as? NSTextField)?.stringValue, "Ordo 测试窗口")
         MainWindowBehavior.apply(to: window)
         MainWindowBehavior.apply(to: window)
 
         XCTAssertTrue(window.toolbar === toolbar)
         XCTAssertEqual(toolbar.items.count, 1)
-        XCTAssertEqual((toolbar.items.first?.view as? NSTextField)?.stringValue, "Ordo 测试窗口")
+        XCTAssertEqual(toolbar.selectedPage, .about)
+        XCTAssertEqual(window.frame.size, size)
         XCTAssertEqual(window.title, "Ordo 测试窗口")
         XCTAssertFalse(window.isVisible)
+    }
+
+    func testPageControlSupportsKeyboardSelection() throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 500),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        MainWindowBehavior.apply(to: window)
+        let toolbar = try XCTUnwrap(window.toolbar as? MainWindowToolbar)
+        let control = try XCTUnwrap(toolbar.items.first?.view as? NSSegmentedControl)
+        var selectedPages: [MainWindowPage] = []
+        toolbar.onSelection = { selectedPages.append($0) }
+        XCTAssertTrue(window.makeFirstResponder(control))
+        // 只向自己的控件交付方向键，不向系统投递全局输入。
+        let rightArrow = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: String(UnicodeScalar(NSRightArrowFunctionKey)!),
+            charactersIgnoringModifiers: String(UnicodeScalar(NSRightArrowFunctionKey)!),
+            isARepeat: false,
+            keyCode: 124
+        ))
+        control.keyDown(with: rightArrow)
+        XCTAssertEqual(toolbar.selectedPage, .features)
+        XCTAssertEqual(selectedPages, [.features])
+        control.keyDown(with: rightArrow)
+        XCTAssertEqual(toolbar.selectedPage, .about)
+        XCTAssertEqual(selectedPages, [.features, .about])
     }
 }
 

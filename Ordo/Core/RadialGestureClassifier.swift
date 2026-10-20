@@ -3,8 +3,8 @@ import Foundation
 
 /// 将鼠标相对手势分类到八个 45° 扇区，并提供半径与角度迟滞。
 struct RadialGestureClassifier: Sendable, Equatable {
-    static let defaultEntryRadius: CGFloat = 24
-    static let defaultExitRadius: CGFloat = 16
+    static let defaultEntryRadius: CGFloat = 8
+    static let defaultExitRadius: CGFloat = defaultEntryRadius * 2 / 3
     static let defaultAngularHysteresis: CGFloat = 6 * .pi / 180
 
     let entryRadius: CGFloat

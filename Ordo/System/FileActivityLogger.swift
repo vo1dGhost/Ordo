@@ -32,7 +32,7 @@ final class FileActivityLogger: ActivityLogging {
         maximumFileSize: Int = 2 * 1_024 * 1_024,
         historyCount: Int = 4,
         reportFailure: @escaping @Sendable (String) -> Void = { message in
-            Logger(subsystem: "com.ghost7.Ordo", category: "文件日志")
+            Logger(subsystem: "com.ghoooooost.Ordo", category: "文件日志")
                 .error("本次运行已停用文件日志：\(message, privacy: .private)")
         }
     ) {

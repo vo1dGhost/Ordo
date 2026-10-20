@@ -127,7 +127,7 @@ final class PreviewPanelController: PreviewDisplaying {
         hideOriginMarker()
     }
 
-    /// 睡眠、会话切换或屏幕重连后不复用旧的 WindowServer/SwiftUI 展示宿主。
+    /// 睡眠、会话或桌面切换、屏幕重连后不复用旧的 WindowServer/SwiftUI 展示宿主。
     func invalidate() {
         hideLayout()
         if let panel {
@@ -145,7 +145,11 @@ final class PreviewPanelController: PreviewDisplaying {
 
     private func layoutPanel() -> NSPanel {
         if let panel {
-            return panel
+            if panel.isOnActiveSpace { return panel }
+            // isVisible 不代表位于当前桌面，不能继续复用留在其他 Space 的面板。
+            hideLayout()
+            panel.close()
+            self.panel = nil
         }
 
         let panel = panelFactory()
@@ -156,7 +160,10 @@ final class PreviewPanelController: PreviewDisplaying {
 
     private func originMarkerPanel() -> NSPanel {
         if let markerPanel {
-            return markerPanel
+            if markerPanel.isOnActiveSpace { return markerPanel }
+            markerPanel.contentViewController = nil
+            markerPanel.close()
+            self.markerPanel = nil
         }
 
         let panel = markerPanelFactory()

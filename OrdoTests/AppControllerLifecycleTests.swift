@@ -1,5 +1,7 @@
 import CoreGraphics
+import Combine
 import Foundation
+import ServiceManagement
 import XCTest
 @testable import Ordo
 
@@ -86,10 +88,50 @@ final class AppControllerLifecycleTests: XCTestCase {
         cleanUp(controller)
     }
 
-    func testFirstLaunchRequestsMainWindowOnlyOnceWithoutPrompting() {
+    func testPermissionPollingPublishesMonitoringOnlyWhenItChanges() {
+        let source = LifecycleEventSource()
+        let permission = LifecycleAccessibilityState(isGranted: true)
+        let controller = makeController(
+            eventSource: source,
+            accessibilityTrust: { _ in permission.isGranted }
+        )
+        var states: [Bool] = []
+        let observation = controller.$monitoringActive.dropFirst().sink { states.append($0) }
+        defer { observation.cancel(); cleanUp(controller) }
+
+        controller.start()
+        for _ in 0..<5 { controller.refreshPermissions() }
+        XCTAssertEqual(states, [true])
+        XCTAssertEqual(source.startCount, 1)
+
+        permission.isGranted = false
+        controller.refreshPermissions()
+        for _ in 0..<5 { controller.refreshPermissions() }
+        XCTAssertEqual(states, [true, false])
+
+        permission.isGranted = true
+        controller.refreshPermissions()
+        for _ in 0..<5 { controller.refreshPermissions() }
+        XCTAssertEqual(states, [true, false, true])
+        XCTAssertEqual(source.startCount, 2)
+    }
+
+    func testRepeatedListenerFailureDoesNotPublishUnchangedInactiveState() {
+        let source = LifecycleEventSource(startError: .eventTapCreationFailed)
+        let controller = makeController(eventSource: source)
+        var states: [Bool] = []
+        let observation = controller.$monitoringActive.dropFirst().sink { states.append($0) }
+        defer { observation.cancel(); cleanUp(controller) }
+
+        controller.start()
+        for _ in 0..<5 { controller.refreshPermissions() }
+        XCTAssertTrue(states.isEmpty)
+        XCTAssertEqual(source.startCount, 6)
+    }
+
+    func testManualWindowOpeningMarksOnboardingWithoutPrompting() {
         defaults.removeObject(forKey: "ordo.onboarding.shown")
         var prompts: [Bool] = []
-        var presentationCount = 0
         let controller = makeController(
             eventSource: LifecycleEventSource(),
             accessibilityTrust: { prompt in
@@ -100,22 +142,22 @@ final class AppControllerLifecycleTests: XCTestCase {
         controller.start()
         XCTAssertFalse(defaults.bool(forKey: "ordo.onboarding.shown"))
 
-        controller.presentInitialWindowIfNeeded { presentationCount += 1 }
-        controller.presentInitialWindowIfNeeded { presentationCount += 1 }
+        controller.markMainWindowPresented()
+        controller.markMainWindowPresented()
         controller.refreshPermissions()
 
-        XCTAssertEqual(presentationCount, 1)
         XCTAssertTrue(defaults.bool(forKey: "ordo.onboarding.shown"))
         XCTAssertFalse(prompts.isEmpty)
         XCTAssertFalse(prompts.contains(true))
         cleanUp(controller)
     }
 
-    func testExistingUserDoesNotReceiveAnotherInitialWindow() {
+    func testExistingOnboardingMarkerSurvivesStartupAndGestureReset() {
         let controller = makeController(eventSource: LifecycleEventSource())
-        var presentationCount = 0
-        controller.presentInitialWindowIfNeeded { presentationCount += 1 }
-        XCTAssertEqual(presentationCount, 0)
+        controller.start()
+        controller.resizeChord = controller.moveChord
+        controller.resetGestureSettingsToDefaults()
+        XCTAssertTrue(defaults.bool(forKey: "ordo.onboarding.shown"))
         cleanUp(controller)
     }
 
@@ -234,7 +276,7 @@ final class AppControllerLifecycleTests: XCTestCase {
         controller.start()
         let activityCount = logger.entries.count
 
-        controller.resetShortcutsToDefaults()
+        controller.resetGestureSettingsToDefaults()
 
         XCTAssertEqual(controller.resizeChord, .defaultResize)
         XCTAssertEqual(controller.snapChord, .defaultSnap)
@@ -242,8 +284,9 @@ final class AppControllerLifecycleTests: XCTestCase {
         XCTAssertNil(controller.shortcutValidationMessage)
         XCTAssertNil(controller.statusMessage)
         XCTAssertTrue(controller.isOperational)
-        XCTAssertEqual(source.startCount, 1)
-        XCTAssertEqual(logger.entries.count, activityCount)
+        XCTAssertEqual(source.startCount, 2)
+        XCTAssertEqual(logger.entries.count, activityCount + 1)
+        XCTAssertTrue(logger.entries.allSatisfy { $0.level == .info })
         XCTAssertEqual(defaults.integer(forKey: "ordo.shortcut.resize"), Int(ModifierChord.defaultResize.rawValue))
         XCTAssertEqual(defaults.integer(forKey: "ordo.shortcut.snap"), Int(ModifierChord.defaultSnap.rawValue))
         XCTAssertEqual(defaults.integer(forKey: "ordo.shortcut.move"), Int(ModifierChord.defaultMove.rawValue))
@@ -257,14 +300,17 @@ final class AppControllerLifecycleTests: XCTestCase {
     }
 
     func testResetShortcutsClearsExistingConflictAndPreservesOtherSettings() {
-        let controller = makeController(eventSource: LifecycleEventSource())
+        let loginItems = LifecycleLoginItems(status: .enabled)
+        let controller = makeController(eventSource: LifecycleEventSource(), loginItemManager: loginItems)
         controller.isEnabled = false
         controller.setSnapAnimationEnabled(false)
+        controller.setMenuBarIconVisible(false)
+        controller.setSilentLaunchEnabled(true)
         controller.resizeChord = controller.moveChord
         XCTAssertNotNil(controller.shortcutValidationMessage)
         XCTAssertNotNil(controller.statusMessage)
 
-        controller.resetShortcutsToDefaults()
+        controller.resetGestureSettingsToDefaults()
 
         XCTAssertEqual(controller.resizeChord, .defaultResize)
         XCTAssertEqual(controller.snapChord, .defaultSnap)
@@ -273,6 +319,10 @@ final class AppControllerLifecycleTests: XCTestCase {
         XCTAssertNil(controller.statusMessage)
         XCTAssertFalse(controller.isEnabled)
         XCTAssertFalse(controller.isSnapAnimationEnabled)
+        XCTAssertFalse(controller.isMenuBarIconVisible)
+        XCTAssertTrue(controller.isSilentLaunchEnabled)
+        XCTAssertTrue(controller.isLaunchAtLoginEnabled)
+        XCTAssertTrue(loginItems.changes.isEmpty)
         cleanUp(controller)
     }
 
@@ -283,8 +333,8 @@ final class AppControllerLifecycleTests: XCTestCase {
         controller.start()
         let activityCount = logger.entries.count
 
-        controller.resetShortcutsToDefaults()
-        controller.resetShortcutsToDefaults()
+        controller.resetGestureSettingsToDefaults()
+        controller.resetGestureSettingsToDefaults()
 
         XCTAssertTrue(controller.isOperational)
         XCTAssertEqual(source.startCount, 1)
@@ -292,10 +342,158 @@ final class AppControllerLifecycleTests: XCTestCase {
         cleanUp(controller)
     }
 
+    func testResetPreservesLegacyDistanceForDowngrades() {
+        defaults.set(80, forKey: "ordo.snap.triggerDistance")
+        let controller = makeController(eventSource: LifecycleEventSource())
+        controller.resetGestureSettingsToDefaults()
+        XCTAssertEqual(defaults.double(forKey: "ordo.snap.triggerDistance"), 80)
+        cleanUp(controller)
+    }
+
+    func testNewPreferencesDefaultAndPersistWithoutChangingMonitoring() {
+        let source = LifecycleEventSource()
+        let controller = makeController(eventSource: source)
+        controller.start()
+        XCTAssertTrue(controller.isMenuBarIconVisible)
+        XCTAssertFalse(controller.isSilentLaunchEnabled)
+        XCTAssertTrue(controller.shouldShowMainWindowOnManualLaunch)
+        let epoch = source.epoch
+        controller.setMenuBarIconVisible(false)
+        controller.setSilentLaunchEnabled(true)
+        XCTAssertFalse(controller.shouldShowMainWindowOnManualLaunch)
+        XCTAssertEqual(source.epoch, epoch)
+        XCTAssertTrue(controller.isOperational)
+
+        let reloaded = makeController(eventSource: LifecycleEventSource())
+        XCTAssertFalse(reloaded.isMenuBarIconVisible)
+        XCTAssertTrue(reloaded.isSilentLaunchEnabled)
+        XCTAssertFalse(reloaded.shouldShowMainWindowOnManualLaunch)
+        controller.setMenuBarIconVisible(true)
+        XCTAssertTrue(defaults.bool(forKey: "ordo.menuBar.visible"))
+        reloaded.shutdown()
+        cleanUp(controller)
+    }
+
+    func testRepeatedMenuBarBindingWritesDoNotRepublishState() {
+        let controller = makeController(eventSource: LifecycleEventSource())
+        var changes: [Bool] = []
+        let observation = controller.$isMenuBarIconVisible.dropFirst().sink { changes.append($0) }
+        controller.setMenuBarIconVisible(true)
+        controller.setMenuBarIconVisible(false)
+        controller.setMenuBarIconVisible(false)
+        controller.setMenuBarIconVisible(true)
+        controller.setMenuBarIconVisible(true)
+        XCTAssertEqual(changes, [false, true])
+        observation.cancel()
+        cleanUp(controller)
+    }
+
+    func testFirstUseShowsWindowEvenWithSilentPreferenceAndSelectsPermissionPage() {
+        let controller = makeController(
+            eventSource: LifecycleEventSource(),
+            accessibilityTrust: { _ in false }
+        )
+        defaults.removeObject(forKey: "ordo.onboarding.shown")
+        controller.setSilentLaunchEnabled(true)
+        XCTAssertTrue(controller.shouldShowMainWindowOnManualLaunch)
+        controller.markMainWindowPresented()
+        XCTAssertEqual(controller.mainWindowPage, .features)
+        XCTAssertFalse(controller.shouldShowMainWindowOnManualLaunch)
+        controller.mainWindowPage = .about
+        controller.markMainWindowPresented()
+        XCTAssertEqual(controller.mainWindowPage, .about)
+        cleanUp(controller)
+    }
+
+    func testFirstAuthorizedPresentationSelectsBasicAndReopenKeepsSelection() {
+        let controller = makeController(eventSource: LifecycleEventSource())
+        controller.markMainWindowPresented()
+        XCTAssertEqual(controller.mainWindowPage, .basic)
+        controller.mainWindowPage = .features
+        controller.markMainWindowPresented()
+        XCTAssertEqual(controller.mainWindowPage, .features)
+        cleanUp(controller)
+    }
+
+    func testRepeatedSilentPreferenceWritesDoNotRepublishOrRestartMonitoring() {
+        let source = LifecycleEventSource()
+        let controller = makeController(eventSource: source)
+        controller.start()
+        var changes: [Bool] = []
+        let observation = controller.$isSilentLaunchEnabled.dropFirst().sink { changes.append($0) }
+        controller.setSilentLaunchEnabled(false)
+        controller.setSilentLaunchEnabled(true)
+        controller.setSilentLaunchEnabled(true)
+        controller.setSilentLaunchEnabled(false)
+        XCTAssertEqual(changes, [true, false])
+        XCTAssertEqual(source.startCount, 1)
+        observation.cancel()
+        cleanUp(controller)
+    }
+
+    func testLoginItemInitialStateAndExternalChangesNeverRegisterAutomatically() {
+        let loginItems = LifecycleLoginItems()
+        let controller = makeController(eventSource: LifecycleEventSource(), loginItemManager: loginItems)
+        XCTAssertFalse(controller.isLaunchAtLoginEnabled)
+        controller.start()
+        for status: SMAppService.Status in [.enabled, .requiresApproval, .notRegistered, .notFound] {
+            loginItems.status = status
+            controller.refreshLoginItemStatus()
+            XCTAssertEqual(controller.loginItemStatus, status)
+            XCTAssertEqual(controller.isLaunchAtLoginEnabled, status == .enabled || status == .requiresApproval)
+        }
+        XCTAssertTrue(loginItems.changes.isEmpty)
+        cleanUp(controller)
+    }
+
+    func testLoginItemRegistrationApprovalAndUnregistrationUseSystemState() {
+        let loginItems = LifecycleLoginItems()
+        loginItems.registrationStatus = .requiresApproval
+        let controller = makeController(eventSource: LifecycleEventSource(), loginItemManager: loginItems)
+        controller.setLaunchAtLoginEnabled(true)
+        XCTAssertEqual(controller.loginItemStatus, .requiresApproval)
+        XCTAssertTrue(controller.isLaunchAtLoginEnabled)
+        controller.setLaunchAtLoginEnabled(true)
+        XCTAssertEqual(loginItems.changes, [true])
+        controller.openLoginItemSettings()
+        XCTAssertEqual(loginItems.openSettingsCount, 1)
+        loginItems.status = .enabled
+        controller.refreshLoginItemStatus()
+        XCTAssertEqual(controller.loginItemStatus, .enabled)
+        controller.setLaunchAtLoginEnabled(false)
+        controller.setLaunchAtLoginEnabled(false)
+        XCTAssertEqual(controller.loginItemStatus, .notRegistered)
+        XCTAssertEqual(loginItems.changes, [true, false])
+        cleanUp(controller)
+    }
+
+    func testLoginItemErrorsPreserveActualStateAndRemainSeparateFromPermissionStatus() {
+        let loginItems = LifecycleLoginItems()
+        loginItems.failure = NSError(domain: "OrdoTests.LoginItem", code: 1)
+        let controller = makeController(eventSource: LifecycleEventSource(), loginItemManager: loginItems)
+        controller.setLaunchAtLoginEnabled(true)
+        XCTAssertFalse(controller.isLaunchAtLoginEnabled)
+        XCTAssertNotNil(controller.loginItemErrorMessage)
+        XCTAssertNil(controller.statusMessage)
+        loginItems.failure = nil
+        controller.setLaunchAtLoginEnabled(true)
+        XCTAssertTrue(controller.isLaunchAtLoginEnabled)
+        XCTAssertNil(controller.loginItemErrorMessage)
+        loginItems.failure = NSError(domain: "OrdoTests.LoginItem", code: 2)
+        controller.setLaunchAtLoginEnabled(false)
+        XCTAssertTrue(controller.isLaunchAtLoginEnabled)
+        XCTAssertNotNil(controller.loginItemErrorMessage)
+        loginItems.status = .notRegistered
+        controller.refreshLoginItemStatus()
+        XCTAssertNil(controller.loginItemErrorMessage)
+        cleanUp(controller)
+    }
+
     private func makeController(
         eventSource: LifecycleEventSource,
         windowController: LifecycleWindowController = LifecycleWindowController(),
         activityLogger: any ActivityLogging = LifecycleActivityLogger(),
+        loginItemManager: any LoginItemManaging = LifecycleLoginItems(),
         accessibilityTrust: @escaping @MainActor (_ prompt: Bool) -> Bool = { _ in true }
     ) -> AppController {
         AppController(
@@ -305,6 +503,7 @@ final class AppControllerLifecycleTests: XCTestCase {
             eventSource: eventSource,
             previewController: LifecyclePreviewDisplay(),
             activityLogger: activityLogger,
+            loginItemManager: loginItemManager,
             accessibilityTrust: accessibilityTrust
         )
     }
@@ -312,6 +511,29 @@ final class AppControllerLifecycleTests: XCTestCase {
     private func cleanUp(_ controller: AppController) {
         controller.shutdown()
         defaults.removePersistentDomain(forName: suiteName)
+    }
+}
+
+@MainActor
+private final class LifecycleLoginItems: LoginItemManaging {
+    var status: SMAppService.Status
+    var registrationStatus: SMAppService.Status = .enabled
+    var failure: Error?
+    var changes: [Bool] = []
+    var openSettingsCount = 0
+
+    init(status: SMAppService.Status = .notRegistered) {
+        self.status = status
+    }
+
+    func setEnabled(_ enabled: Bool) throws {
+        changes.append(enabled)
+        if let failure { throw failure }
+        status = enabled ? registrationStatus : .notRegistered
+    }
+
+    func openSystemSettings() {
+        openSettingsCount += 1
     }
 }
 
@@ -362,11 +584,12 @@ private final class LifecycleAccessibilityState {
 
 @MainActor
 private final class LifecycleEventSource: EventSource {
-    let events = AsyncStream<InputEvent> { _ in }
+    let events = AsyncStream<InputEventBatch> { _ in }
     let failures = AsyncStream<EventSourceError> { _ in }
     private(set) var isRunning = false
     private(set) var epoch: UInt64 = 0
     private(set) var lastError: EventSourceError?
+    var onInterruption: (@MainActor () -> Void)?
     private(set) var startCount = 0
     var startError: EventSourceError?
 

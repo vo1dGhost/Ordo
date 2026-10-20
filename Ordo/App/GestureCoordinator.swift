@@ -40,6 +40,8 @@ final class GestureCoordinator {
     private var motionTask: Task<Void, Never>?
     private var captureTask: Task<Void, Never>?
     private var pendingCaptureMouseLocations: [CGPoint] = []
+    private var pendingCaptureOrigin: CGPoint?
+    private var pendingCaptureHasActivated = false
     private var pendingFinishAfterCapture: ModifierChord?
     private var raiseTasks: [UInt64: Task<WindowRaiseResult, Never>] = [:]
     private var terminalTasks: [UInt64: TerminalTask] = [:]
@@ -77,6 +79,10 @@ final class GestureCoordinator {
             handleModifierChange(event)
         case .mouseMoved:
             handleMouseEvent(event)
+        case .inputOverflow:
+            currentModifiers = event.modifiers
+            cancelCurrentSession()
+            requiresFullModifierRelease = !event.modifiers.isEmpty
         }
     }
 
@@ -91,8 +97,7 @@ final class GestureCoordinator {
         generation &+= 1
         captureTask?.cancel()
         captureTask = nil
-        pendingCaptureMouseLocations.removeAll(keepingCapacity: true)
-        pendingFinishAfterCapture = nil
+        clearPendingCaptureInput()
         motionTask?.cancel()
         motionTask = nil
         for task in raiseTasks.values {
@@ -118,9 +123,39 @@ final class GestureCoordinator {
         session = nil
         lockedScreen = nil
         activeChord = nil
-        requiresFullModifierRelease = (requiresFullModifierRelease || hadActiveChord)
-            && !currentModifiers.isEmpty
+        requiresFullModifierRelease = requiresFullModifierRelease
+            || (hadActiveChord && !currentModifiers.isEmpty)
         return hadActiveWork
+    }
+
+    /// 监听中断期间可能丢失松键边界，必须先观察到全部松开才能开始新手势。
+    func handleInputInterruption() {
+        cancelCurrentSession()
+        requiresFullModifierRelease = true
+    }
+
+    private func clearPendingCaptureInput() {
+        pendingCaptureMouseLocations.removeAll(keepingCapacity: true)
+        pendingCaptureOrigin = nil
+        pendingCaptureHasActivated = false
+        pendingFinishAfterCapture = nil
+    }
+
+    private var canReplaceTrackingSession: Bool {
+        session?.phase != .active && !pendingCaptureHasActivated && pendingFinishAfterCapture == nil
+    }
+
+    /// 捕获期间已松键的手势仍可提交；若完整松键后又开始新手势，则取消旧捕获。
+    private func handleReleasedPendingCapture(_ event: InputEvent) -> Bool {
+        guard captureTask != nil, session == nil, let remainingModifiers = pendingFinishAfterCapture else {
+            return false
+        }
+        if event.modifiers.isEmpty {
+            pendingFinishAfterCapture = []
+        } else if remainingModifiers.isEmpty, let mode = mode(matching: event.modifiers) {
+            replaceSession(with: mode, chord: event.modifiers, location: event.location)
+        }
+        return true
     }
 
     private func handleModifierChange(_ event: InputEvent) {
@@ -132,13 +167,14 @@ final class GestureCoordinator {
             return
         }
 
+        if handleReleasedPendingCapture(event) { return }
+
         if let activeChord {
             if event.modifiers != activeChord,
                event.modifiers.contains(activeChord),
                let replacementMode = mode(matching: event.modifiers),
-               session?.phase != .active,
-               pendingFinishAfterCapture == nil {
-                replaceTrackingSession(
+               canReplaceTrackingSession {
+                replaceSession(
                     with: replacementMode,
                     chord: event.modifiers,
                     location: event.location
@@ -169,9 +205,10 @@ final class GestureCoordinator {
         generation &+= 1
         let token = generation
         activeChord = chord
-        pendingCaptureMouseLocations.removeAll(keepingCapacity: true)
-        pendingFinishAfterCapture = nil
-        radialClassifier.reset()
+        clearPendingCaptureInput()
+        pendingCaptureOrigin = location
+        // 每轮在异步捕获前重置；进入距离固定为 8 pt，清除距离为其三分之二。
+        radialClassifier = RadialGestureClassifier()
 
         let screen = mode == .snap ? screenProvider.screen(containingAXPoint: location) : nil
         if mode == .snap, screen == nil {
@@ -185,6 +222,7 @@ final class GestureCoordinator {
 
         captureTask = Task { [weak self, windowController] in
             do {
+                try Task.checkCancellation()
                 let window = try await windowController.captureWindow(at: location, for: mode)
                 guard let self else {
                     await windowController.release(window)
@@ -206,6 +244,8 @@ final class GestureCoordinator {
                     activationThreshold: GestureSession.defaultActivationThreshold
                 )
                 self.captureTask = nil
+                self.pendingCaptureOrigin = nil
+                self.pendingCaptureHasActivated = false
 
                 if mode == .snap,
                    let screen,
@@ -226,11 +266,12 @@ final class GestureCoordinator {
             } catch {
                 guard let self, self.generation == token else { return }
                 self.captureTask = nil
-                self.pendingCaptureMouseLocations.removeAll(keepingCapacity: true)
-                self.pendingFinishAfterCapture = nil
+                // 已完整松键后的当前按键属于下一轮，捕获失败也不能丢掉这个边界。
+                let hasFullyReleased = self.pendingFinishAfterCapture?.isEmpty == true
+                self.clearPendingCaptureInput()
                 self.activeChord = nil
                 self.lockedScreen = nil
-                self.requiresFullModifierRelease = !self.currentModifiers.isEmpty
+                self.requiresFullModifierRelease = !hasFullyReleased && !self.currentModifiers.isEmpty
                 self.radialClassifier.reset()
                 self.previewController.hide()
                 self.onStatus(error.localizedDescription)
@@ -247,13 +288,14 @@ final class GestureCoordinator {
             return
         }
 
+        if handleReleasedPendingCapture(event) { return }
+
         if let activeChord {
             if event.modifiers != activeChord,
                event.modifiers.contains(activeChord),
                let replacementMode = mode(matching: event.modifiers),
-               session?.phase != .active,
-               pendingFinishAfterCapture == nil {
-                replaceTrackingSession(
+               canReplaceTrackingSession {
+                replaceSession(
                     with: replacementMode,
                     chord: event.modifiers,
                     location: event.location
@@ -282,6 +324,11 @@ final class GestureCoordinator {
            pendingFinishAfterCapture == nil {
             // 径向选择带迟滞，必须按顺序重放路径，不能只保留最后一点。
             pendingCaptureMouseLocations.append(location)
+            if let origin = pendingCaptureOrigin,
+               hypot(location.x - origin.x, location.y - origin.y) > GestureSession.defaultActivationThreshold {
+                // 越界后保持锁定，指针返回死区也不能被较长组合键替换。
+                pendingCaptureHasActivated = true
+            }
             return
         }
 
@@ -301,7 +348,7 @@ final class GestureCoordinator {
             self.session = session
 
             if becameActive {
-                startRaiseIfNeeded(session.window, token: generation)
+                startRaiseIfNeeded(session.window, mode: session.mode, token: generation)
             }
             if pendingFinishAfterCapture == nil,
                let selectedLayout,
@@ -323,7 +370,7 @@ final class GestureCoordinator {
                 return
             }
             if becameActive {
-                startRaiseIfNeeded(session.window, token: generation)
+                startRaiseIfNeeded(session.window, mode: session.mode, token: generation)
             }
             let frame: CGRect
             switch session.mode {
@@ -353,8 +400,7 @@ final class GestureCoordinator {
         let terminalToken = generation
         captureTask?.cancel()
         captureTask = nil
-        pendingCaptureMouseLocations.removeAll(keepingCapacity: true)
-        pendingFinishAfterCapture = nil
+        clearPendingCaptureInput()
         motionTask?.cancel()
         motionTask = nil
         pendingMotion = nil
@@ -468,8 +514,8 @@ final class GestureCoordinator {
         }
     }
 
-    /// 较长组合键包含较短组合键时，允许在死区内切换到新的精确组合。
-    private func replaceTrackingSession(
+    /// 替换死区内的组合键，或取代已经完整松键但仍未捕获完成的旧手势。
+    private func replaceSession(
         with mode: InteractionMode,
         chord: ModifierChord,
         location: CGPoint
@@ -478,8 +524,7 @@ final class GestureCoordinator {
         generation &+= 1
         captureTask?.cancel()
         captureTask = nil
-        pendingCaptureMouseLocations.removeAll(keepingCapacity: true)
-        pendingFinishAfterCapture = nil
+        clearPendingCaptureInput()
         motionTask?.cancel()
         motionTask = nil
         pendingMotion = nil
@@ -500,7 +545,7 @@ final class GestureCoordinator {
         beginSession(mode: mode, chord: chord, location: location)
     }
 
-    private func startRaiseIfNeeded(_ window: WindowSnapshot, token: UInt64) {
+    private func startRaiseIfNeeded(_ window: WindowSnapshot, mode: InteractionMode, token: UInt64) {
         guard raiseTasks[token] == nil else { return }
 
         raiseTasks[token] = Task { [weak self, windowController] in
@@ -508,6 +553,11 @@ final class GestureCoordinator {
             do {
                 try Task.checkCancellation()
                 try await windowController.raiseWindow(window)
+                await Task.yield()
+                try Task.checkCancellation()
+                if mode != .snap {
+                    try await windowController.beginContinuousInteraction(with: window)
+                }
                 result = .succeeded
             } catch is CancellationError {
                 return .cancelled
@@ -566,12 +616,12 @@ final class GestureCoordinator {
                 do {
                     switch request.mode {
                     case .move:
-                        _ = try await windowController.setPosition(
+                        try await windowController.updatePosition(
                             request.frame.origin,
                             of: request.window
                         )
                     case .resize:
-                        _ = try await windowController.setSize(
+                        try await windowController.updateSize(
                             request.frame.size,
                             of: request.window
                         )

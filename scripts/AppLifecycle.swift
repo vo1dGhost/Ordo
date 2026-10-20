@@ -4,7 +4,7 @@ import Security
 // 仅供本地更新命令使用，不加入 App target，也不请求任何隐私权限。
 @main
 enum AppLifecycle {
-    private static let bundleID = "com.ghost7.Ordo"
+    private static let bundleID = "com.ghoooooost.Ordo"
     private static let teamID = "ND3SVRRF43"
 
     struct Failure: Error, CustomStringConvertible {

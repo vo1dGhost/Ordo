@@ -5,6 +5,8 @@ import Foundation
 enum InputEventKind: Sendable, Equatable {
     case flagsChanged
     case mouseMoved
+    // 仅由内部缓冲产生，用于在严重阻塞时取消手势，不订阅额外系统事件。
+    case inputOverflow
 }
 
 /// Event Tap 只输出手势需要的信息，不采集普通键盘内容。
@@ -49,11 +51,13 @@ enum EventSourceError: Error, Equatable, LocalizedError, Sendable {
 
 @MainActor
 protocol EventSource: AnyObject, Sendable {
-    var events: AsyncStream<InputEvent> { get }
+    var events: AsyncStream<InputEventBatch> { get }
     var failures: AsyncStream<EventSourceError> { get }
     var isRunning: Bool { get }
     var epoch: UInt64 { get }
     var lastError: EventSourceError? { get }
+    /// 输入连续性中断时，在重新接收事件之前同步通知消费者取消旧任务。
+    var onInterruption: (@MainActor () -> Void)? { get set }
 
     func start() throws
     func stop()
@@ -62,16 +66,16 @@ protocol EventSource: AnyObject, Sendable {
 /// listen-only 的 Session Event Tap；不修改或吞掉任何系统事件。
 @MainActor
 final class InputEventTap: EventSource {
-    let events: AsyncStream<InputEvent>
+    let events: AsyncStream<InputEventBatch>
     let failures: AsyncStream<EventSourceError>
     private(set) var isRunning = false
     private(set) var epoch: UInt64 = 0
     private(set) var lastError: EventSourceError?
+    var onInterruption: (@MainActor () -> Void)?
 
     private let relay: InputEventRelay
     private let failureContinuation: AsyncStream<EventSourceError>.Continuation
-    private var eventTap: CFMachPort?
-    private var runLoopSource: CFRunLoopSource?
+    private var inputThread: InputEventThread?
     private var wantsToRun = false
     private var restartPending = false
 
@@ -85,9 +89,10 @@ final class InputEventTap: EventSource {
         self.failures = failures
         self.failureContinuation = failureContinuation
 
-        relay.setRestartHandler { [weak self] in
+        relay.setRestartHandler { [weak self] sourceEpoch in
             Task { @MainActor in
-                self?.restartAfterSystemDisable()
+                guard let self, self.epoch == sourceEpoch else { return }
+                self.restartAfterSystemDisable()
             }
         }
     }
@@ -95,6 +100,9 @@ final class InputEventTap: EventSource {
     func start() throws {
         wantsToRun = true
         lastError = nil
+        relay.stopAccepting()
+        // 重建前等待输入线程上的旧回调结束，随后才启用新 epoch。
+        tearDownTap()
 
         guard AXIsProcessTrusted() else {
             wantsToRun = false
@@ -103,14 +111,6 @@ final class InputEventTap: EventSource {
             throw error
         }
 
-        if let eventTap, CGEvent.tapIsEnabled(tap: eventTap) {
-            isRunning = true
-            epoch &+= 1
-            relay.startAccepting(epoch: epoch)
-            return
-        }
-
-        tearDownTap()
         do {
             try installTap()
             epoch &+= 1
@@ -133,43 +133,12 @@ final class InputEventTap: EventSource {
     }
 
     private func installTap() throws {
-        let eventMask = eventMask(for: [.flagsChanged, .mouseMoved])
-        let context = Unmanaged.passUnretained(relay).toOpaque()
-
-        guard let tap = CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .listenOnly,
-            eventsOfInterest: eventMask,
-            callback: ordoEventTapCallback,
-            userInfo: context
-        ) else {
-            throw EventSourceError.eventTapCreationFailed
-        }
-
-        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
-            CFMachPortInvalidate(tap)
-            throw EventSourceError.runLoopSourceCreationFailed
-        }
-
-        eventTap = tap
-        runLoopSource = source
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
+        if inputThread == nil { inputThread = InputEventThread(relay: relay) }
+        try inputThread?.install()
     }
 
     private func tearDownTap() {
-        if let eventTap {
-            CGEvent.tapEnable(tap: eventTap, enable: false)
-        }
-        if let runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
-        }
-        if let eventTap {
-            CFMachPortInvalidate(eventTap)
-        }
-        runLoopSource = nil
-        eventTap = nil
+        inputThread?.stop()
         isRunning = false
     }
 
@@ -182,6 +151,8 @@ final class InputEventTap: EventSource {
         epoch &+= 1
         relay.stopAccepting()
         isRunning = false
+        // 同步取消窗口任务；异步事件流或下一条输入都来不及阻止已排队的最终写入。
+        onInterruption?()
 
         guard AXIsProcessTrusted() else {
             reportFailure(.accessibilityPermissionRequired)
@@ -190,13 +161,10 @@ final class InputEventTap: EventSource {
             return
         }
 
-        if let eventTap, CFMachPortIsValid(eventTap) {
-            CGEvent.tapEnable(tap: eventTap, enable: true)
-            if CGEvent.tapIsEnabled(tap: eventTap) {
-                relay.startAccepting(epoch: epoch)
-                isRunning = true
-                return
-            }
+        if inputThread?.reenableIfValid() == true {
+            relay.startAccepting(epoch: epoch)
+            isRunning = true
+            return
         }
 
         tearDownTap()
@@ -218,34 +186,41 @@ final class InputEventTap: EventSource {
         lastError = error
         failureContinuation.yield(error)
     }
-
-    private func eventMask(for types: [CGEventType]) -> CGEventMask {
-        types.reduce(CGEventMask(0)) { mask, type in
-            mask | (CGEventMask(1) << CGEventMask(type.rawValue))
-        }
-    }
 }
 
 /// C 回调只进入这个小型中继：flags 立即记录，mouseMoved 只覆盖最新值。
-private final class InputEventRelay: @unchecked Sendable {
-    let stream: AsyncStream<InputEvent>
+final class InputEventRelay: @unchecked Sendable {
+    let stream: AsyncStream<InputEventBatch>
 
-    private let continuation: AsyncStream<InputEvent>.Continuation
+    private let continuation: AsyncStream<InputEventBatch>.Continuation
     private let lock = NSLock()
-    private let deliveryQueue = DispatchQueue(
-        label: "com.ghost7.Ordo.InputEventTap.coalescing",
+    private static let deliveryQueue = DispatchQueue(
+        label: "com.ghoooooost.Ordo.InputEventTap.coalescing",
         qos: .userInteractive
     )
+    private let now: @Sendable () -> DispatchTime
+    private let scheduleMouseFlush: @Sendable (DispatchTime, @escaping @Sendable () -> Void) -> Void
 
     private var isAccepting = false
     private var currentEpoch: UInt64 = 0
     private var latestMouseEvent: InputEvent?
+    private var pendingBatch: InputEventBatch?
     private var flushScheduled = false
-    private var restartHandler: (@Sendable () -> Void)?
+    private var flushGeneration: UInt64 = 0
+    private var lastMouseDelivery: DispatchTime?
+    private var restartHandler: (@Sendable (UInt64) -> Void)?
 
-    init() {
-        let (stream, continuation) = AsyncStream<InputEvent>.makeStream(
-            bufferingPolicy: .bufferingNewest(16)
+    init(
+        now: @escaping @Sendable () -> DispatchTime = { .now() },
+        scheduleMouseFlush: @escaping @Sendable (DispatchTime, @escaping @Sendable () -> Void) -> Void = {
+            deadline, action in
+            InputEventRelay.deliveryQueue.asyncAfter(deadline: deadline, execute: action)
+        }
+    ) {
+        self.now = now
+        self.scheduleMouseFlush = scheduleMouseFlush
+        let (stream, continuation) = AsyncStream<InputEventBatch>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
         )
         self.stream = stream
         self.continuation = continuation
@@ -255,7 +230,7 @@ private final class InputEventRelay: @unchecked Sendable {
         continuation.finish()
     }
 
-    func setRestartHandler(_ handler: @escaping @Sendable () -> Void) {
+    func setRestartHandler(_ handler: @escaping @Sendable (UInt64) -> Void) {
         lock.withLock {
             restartHandler = handler
         }
@@ -264,21 +239,38 @@ private final class InputEventRelay: @unchecked Sendable {
     func startAccepting(epoch: UInt64) {
         lock.withLock {
             currentEpoch = epoch
+            _ = pendingBatch?.takeEvents()
+            pendingBatch = nil
             latestMouseEvent = nil
+            flushScheduled = false
+            flushGeneration &+= 1
+            lastMouseDelivery = nil
             isAccepting = true
         }
     }
 
     func stopAccepting() {
         lock.withLock {
-            isAccepting = false
-            latestMouseEvent = nil
+            stopAcceptingLocked()
+            _ = pendingBatch?.takeEvents()
+            pendingBatch = nil
         }
     }
 
     func finish() {
-        stopAccepting()
-        continuation.finish()
+        lock.withLock {
+            // 已交付的批次仍可读完；尚未到采样周期的鼠标位置不补发。
+            stopAcceptingLocked()
+            continuation.finish()
+        }
+    }
+
+    private func stopAcceptingLocked() {
+        isAccepting = false
+        latestMouseEvent = nil
+        flushScheduled = false
+        flushGeneration &+= 1
+        lastMouseDelivery = nil
     }
 
     func record(type: CGEventType, event: CGEvent) {
@@ -292,50 +284,67 @@ private final class InputEventRelay: @unchecked Sendable {
             return
         }
 
-        let inputEvent = InputEvent(
-            kind: kind,
-            modifiers: ModifierChord(eventFlags: event.flags),
-            location: event.location,
-            timestamp: event.timestamp,
-            sourceEpoch: lock.withLock { currentEpoch }
-        )
-
         if kind == .flagsChanged {
             lock.withLock {
                 guard isAccepting else { return }
+                let inputEvent = inputEvent(kind: kind, event: event)
                 // 松键前先提交最后一个鼠标位置，避免窗口停在上一帧。
                 if let pendingMouseEvent = latestMouseEvent {
                     latestMouseEvent = nil
-                    continuation.yield(pendingMouseEvent)
+                    flushScheduled = false
+                    flushGeneration &+= 1
+                    lastMouseDelivery = now()
+                    enqueue(pendingMouseEvent)
                 }
-                continuation.yield(inputEvent)
+                enqueue(inputEvent)
             }
         } else {
-            let shouldSchedule = lock.withLock { () -> Bool in
-                if isAccepting {
-                    latestMouseEvent = inputEvent
-                    if !flushScheduled {
-                        flushScheduled = true
-                        return true
-                    }
-                }
-                return false
+            let scheduled = lock.withLock { () -> (deadline: DispatchTime, generation: UInt64)? in
+                guard isAccepting else { return nil }
+                latestMouseEvent = inputEvent(kind: kind, event: event)
+                guard !flushScheduled else { return nil }
+                flushScheduled = true
+                flushGeneration &+= 1
+                let currentTime = now()
+                // 首个位置立即入队；后续只等待当前周期的剩余时间，避免每批再等完整一帧。
+                let deadline = lastMouseDelivery.map {
+                    DispatchTime(uptimeNanoseconds: max(
+                        currentTime.uptimeNanoseconds,
+                        $0.uptimeNanoseconds + UInt64(WindowUpdateTiming.intervalNanoseconds)
+                    ))
+                } ?? currentTime
+                return (deadline, flushGeneration)
             }
-            if shouldSchedule {
-                deliveryQueue.asyncAfter(deadline: .now() + .milliseconds(16)) { [weak self] in
-                    self?.flushLatestMouseEvent()
+            if let scheduled {
+                scheduleMouseFlush(scheduled.deadline) { [weak self] in
+                    self?.flushLatestMouseEvent(generation: scheduled.generation)
                 }
             }
         }
     }
 
     func requestRestart() {
-        let handler = lock.withLock { restartHandler }
-        handler?()
+        let request = lock.withLock { () -> ((@Sendable (UInt64) -> Void), UInt64)? in
+            guard isAccepting, let restartHandler else { return nil }
+            return (restartHandler, currentEpoch)
+        }
+        if let (handler, epoch) = request { handler(epoch) }
     }
 
-    private func flushLatestMouseEvent() {
+    /// 调用方持有 lock，epoch 与是否接收的检查保持原子性。
+    private func inputEvent(kind: InputEventKind, event: CGEvent) -> InputEvent {
+        InputEvent(
+            kind: kind,
+            modifiers: ModifierChord(eventFlags: event.flags),
+            location: event.location,
+            timestamp: event.timestamp,
+            sourceEpoch: currentEpoch
+        )
+    }
+
+    private func flushLatestMouseEvent(generation: UInt64) {
         lock.withLock {
+            guard generation == flushGeneration else { return }
             flushScheduled = false
             guard isAccepting else {
                 latestMouseEvent = nil
@@ -343,14 +352,22 @@ private final class InputEventRelay: @unchecked Sendable {
             }
             if let event = latestMouseEvent {
                 latestMouseEvent = nil
-                // 与 flagsChanged 共用同一临界区，锁获取顺序即 AsyncStream 交付顺序。
-                continuation.yield(event)
+                lastMouseDelivery = now()
+                enqueue(event)
             }
         }
     }
+
+    /// 调用方持有 lock；始终只有一批尚未被消费者取走的输入。
+    private func enqueue(_ event: InputEvent) {
+        if pendingBatch?.append(event) == true { return }
+        let batch = InputEventBatch([event])
+        pendingBatch = batch
+        continuation.yield(batch)
+    }
 }
 
-private func ordoEventTapCallback(
+func ordoEventTapCallback(
     proxy: CGEventTapProxy,
     type: CGEventType,
     event: CGEvent,

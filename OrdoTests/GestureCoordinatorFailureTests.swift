@@ -281,6 +281,92 @@ final class GestureCoordinatorFailureTests: XCTestCase {
         XCTAssertEqual(preview.hideCount, 1)
     }
 
+    func testCaptureFailurePreservesFullReleaseWhileNextChordIsBeingPressed() async throws {
+        let releasedAt = CGPoint(x: 130, y: 100)
+        for releaseEvent in [flags([], at: releasedAt), mouse([], at: releasedAt)] {
+            let controller = FailureWindowController(scenario: .firstCaptureFails)
+            let status = FailureStatusRecorder()
+            let outcomes = FailureOutcomeRecorder()
+            let coordinator = makeCoordinator(
+                controller: controller,
+                status: status,
+                outcomes: outcomes
+            )
+
+            // 同一批输入先完整松键，再开始逐键按下新组合；此时旧捕获尚未返回。
+            coordinator.handle(flags(.defaultMove, at: CGPoint(x: 100, y: 100)))
+            coordinator.handle(mouse(.defaultMove, at: releasedAt))
+            coordinator.handle(releaseEvent)
+            coordinator.handle(flags([.option], at: CGPoint(x: 200, y: 200)))
+            try await waitForMetrics(controller, description: "等待旧捕获失败处理完成") {
+                $0.captureCount == 1 && status.messages.count == 1
+            }
+
+            coordinator.handle(flags(.defaultResize, at: CGPoint(x: 200, y: 200)))
+            coordinator.handle(mouse(.defaultResize, at: CGPoint(x: 240, y: 230)))
+            coordinator.handle(flags([], at: CGPoint(x: 240, y: 230)))
+            try await waitForMetrics(controller, description: "等待下一轮缩放完成并释放") {
+                $0.releaseCount == 1
+            }
+
+            let metrics = await controller.metrics()
+            XCTAssertEqual(metrics.captureCount, 2)
+            XCTAssertEqual(metrics.raiseAttempts, 1)
+            XCTAssertEqual(metrics.positionAttempts, 0)
+            XCTAssertEqual(metrics.sizeAttempts, 1)
+            XCTAssertEqual(metrics.lastSize, CGSize(width: 440, height: 330))
+            XCTAssertEqual(metrics.releaseCount, 1)
+            XCTAssertEqual(status.messages, [FailureWindowError.captureFailed.localizedDescription])
+            XCTAssertEqual(outcomes.values, [.resized])
+        }
+    }
+
+    func testCaptureFailureWithoutFullReleaseWaitsBeforeStartingAnotherGesture() async throws {
+        for remainingModifiers in [ModifierChord.defaultMove, [.shift]] {
+            let controller = FailureWindowController(scenario: .firstCaptureFails)
+            let status = FailureStatusRecorder()
+            let outcomes = FailureOutcomeRecorder()
+            let coordinator = makeCoordinator(
+                controller: controller,
+                status: status,
+                outcomes: outcomes
+            )
+
+            coordinator.handle(flags(.defaultMove, at: CGPoint(x: 100, y: 100)))
+            coordinator.handle(mouse(.defaultMove, at: CGPoint(x: 130, y: 100)))
+            coordinator.handle(flags(remainingModifiers, at: CGPoint(x: 130, y: 100)))
+            try await waitForMetrics(controller, description: "等待未完整松键的捕获失败") {
+                $0.captureCount == 1 && status.messages.count == 1
+            }
+
+            coordinator.handle(flags(.defaultResize, at: CGPoint(x: 200, y: 200)))
+            coordinator.handle(mouse(.defaultResize, at: CGPoint(x: 240, y: 230)))
+            try await allowAsynchronousWorkToSettle()
+            var metrics = await controller.metrics()
+            XCTAssertEqual(metrics.captureCount, 1)
+            XCTAssertEqual(metrics.raiseAttempts, 0)
+            XCTAssertEqual(metrics.sizeAttempts, 0)
+            XCTAssertTrue(outcomes.values.isEmpty)
+
+            coordinator.handle(flags([], at: CGPoint(x: 240, y: 230)))
+            coordinator.handle(flags(.defaultResize, at: CGPoint(x: 200, y: 200)))
+            coordinator.handle(mouse(.defaultResize, at: CGPoint(x: 240, y: 230)))
+            coordinator.handle(flags([], at: CGPoint(x: 240, y: 230)))
+            try await waitForMetrics(controller, description: "等待完整松键后的缩放恢复") {
+                $0.releaseCount == 1
+            }
+
+            metrics = await controller.metrics()
+            XCTAssertEqual(metrics.captureCount, 2)
+            XCTAssertEqual(metrics.raiseAttempts, 1)
+            XCTAssertEqual(metrics.positionAttempts, 0)
+            XCTAssertEqual(metrics.sizeAttempts, 1)
+            XCTAssertEqual(metrics.lastSize, CGSize(width: 440, height: 330))
+            XCTAssertEqual(status.messages, [FailureWindowError.captureFailed.localizedDescription])
+            XCTAssertEqual(outcomes.values, [.resized])
+        }
+    }
+
     private func makeCoordinator(
         controller: FailureWindowController,
         status: FailureStatusRecorder = FailureStatusRecorder(),
@@ -386,6 +472,7 @@ private actor FailureWindowController: WindowControlling {
         case blockFirstPosition
         case frameFails
         case captureFails
+        case firstCaptureFails
     }
 
     struct Metrics: Sendable {
@@ -396,6 +483,8 @@ private actor FailureWindowController: WindowControlling {
         var positionAttempts = 0
         var completedPositionWrites = 0
         var positionIsBlocked = false
+        var sizeAttempts = 0
+        var lastSize: CGSize?
         var frameAttempts = 0
         var releaseCount = 0
     }
@@ -412,7 +501,7 @@ private actor FailureWindowController: WindowControlling {
 
     func captureWindow(at point: CGPoint, for mode: InteractionMode) async throws -> WindowSnapshot {
         state.captureCount += 1
-        if scenario == .captureFails {
+        if scenario == .captureFails || (scenario == .firstCaptureFails && state.captureCount == 1) {
             throw FailureWindowError.captureFailed
         }
         return WindowSnapshot(
@@ -471,7 +560,9 @@ private actor FailureWindowController: WindowControlling {
     }
 
     func setSize(_ size: CGSize, of window: WindowSnapshot) async throws -> WindowSnapshot {
-        WindowSnapshot(
+        state.sizeAttempts += 1
+        state.lastSize = size
+        return WindowSnapshot(
             id: window.id,
             frame: CGRect(origin: window.frame.origin, size: size),
             pid: window.pid

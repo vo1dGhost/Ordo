@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import ServiceManagement
 import SwiftUI
 
 /// 应用唯一状态源：持久化设置、权限状态、监听生命周期和首启引导。
@@ -12,10 +13,70 @@ final class AppController: ObservableObject {
         static let snapChord = "ordo.shortcut.snap"
         static let moveChord = "ordo.shortcut.move"
         static let snapAnimationEnabled = "ordo.snap.animationEnabled"
+        static let menuBarIconVisible = "ordo.menuBar.visible"
+        static let silentLaunchEnabled = "ordo.launch.silent"
         static let hasShownOnboarding = "ordo.onboarding.shown"
     }
 
-    static let shared = AppController(activityLogger: ActivityLoggerFactory.makeDefault())
+    static let testHostPreferenceSuiteName = "OrdoTests.Host.\(UUID().uuidString)"
+    static let shared = AppController(
+        defaults: ActivityLoggerFactory.isRunningTests
+            ? UserDefaults(suiteName: testHostPreferenceSuiteName)! : .standard,
+        activityLogger: ActivityLoggerFactory.makeDefault(),
+        accessibilityTrust: { prompt in
+            // 测试宿主可以展示自己的设置窗口，但不得启动真实全局手势监听。
+            !ActivityLoggerFactory.isRunningTests && AXWindowController.isAccessibilityTrusted(prompt: prompt)
+        }
+    )
+    @Published private(set) var isMenuBarIconVisible: Bool
+    @Published private(set) var isSilentLaunchEnabled: Bool
+    @Published var mainWindowPage: MainWindowPage = .basic
+    @Published private(set) var loginItemStatus: SMAppService.Status
+    @Published private(set) var loginItemErrorMessage: String?
+
+    var isLaunchAtLoginEnabled: Bool {
+        loginItemStatus == .enabled || loginItemStatus == .requiresApproval
+    }
+
+    func setMenuBarIconVisible(_ visible: Bool) {
+        // MenuBarExtra 会在更新场景时回写相同值，须在 Published 发布之前去重。
+        guard isMenuBarIconVisible != visible else { return }
+        isMenuBarIconVisible = visible
+        defaults.set(visible, forKey: PreferenceKey.menuBarIconVisible)
+    }
+
+    var shouldShowMainWindowOnManualLaunch: Bool {
+        !isSilentLaunchEnabled || !defaults.bool(forKey: PreferenceKey.hasShownOnboarding)
+    }
+
+    func setSilentLaunchEnabled(_ enabled: Bool) {
+        guard isSilentLaunchEnabled != enabled else { return }
+        isSilentLaunchEnabled = enabled
+        defaults.set(enabled, forKey: PreferenceKey.silentLaunchEnabled)
+    }
+
+    func refreshLoginItemStatus() {
+        let status = loginItemManager.status
+        if status != loginItemStatus { loginItemErrorMessage = nil }
+        loginItemStatus = status
+    }
+
+    func setLaunchAtLoginEnabled(_ enabled: Bool) {
+        guard shutdownTask == nil else { return }
+        refreshLoginItemStatus()
+        guard enabled != isLaunchAtLoginEnabled else { return }
+        do {
+            try loginItemManager.setEnabled(enabled)
+            loginItemErrorMessage = nil
+        } catch {
+            loginItemErrorMessage = "无法更新开机自启：\(error.localizedDescription)"
+        }
+        loginItemStatus = loginItemManager.status
+    }
+
+    func openLoginItemSettings() {
+        loginItemManager.openSystemSettings()
+    }
 
     @Published var isEnabled: Bool {
         didSet {
@@ -73,6 +134,7 @@ final class AppController: ObservableObject {
     private let accessibilityTrust: @MainActor (_ prompt: Bool) -> Bool
     private let accessibilityReduceMotion: @MainActor () -> Bool
     private let activityLogger: any ActivityLogging
+    private let loginItemManager: any LoginItemManaging
     private var statusCategory: ActivityCategory?
 
     private lazy var gestureCoordinator = GestureCoordinator(
@@ -95,12 +157,14 @@ final class AppController: ObservableObject {
     private var screenTask: Task<Void, Never>?
     private var workspaceSleepTask: Task<Void, Never>?
     private var sessionResignTask: Task<Void, Never>?
+    private var activeSpaceTask: Task<Void, Never>?
     private var permissionTimer: Timer?
     private var shutdownTask: Task<Void, Never>?
     private var hasStarted = false
     private var lastMonitoringEligibility = false
     private var lastListenerErrorMessage: String?
-    private var isResettingShortcuts = false
+    private var isResettingGestureSettings = false
+    private var hasPreparedMainWindow = false
 
     init(
         defaults: UserDefaults = .standard,
@@ -109,6 +173,7 @@ final class AppController: ObservableObject {
         eventSource: any EventSource = InputEventTap(),
         previewController: any PreviewDisplaying = PreviewPanelController(),
         activityLogger: any ActivityLogging = SilentActivityLogger(),
+        loginItemManager: any LoginItemManaging = SystemLoginItemManager(),
         accessibilityTrust: @escaping @MainActor (_ prompt: Bool) -> Bool = { prompt in
             AXWindowController.isAccessibilityTrusted(prompt: prompt)
         },
@@ -122,8 +187,14 @@ final class AppController: ObservableObject {
         self.eventSource = eventSource
         self.previewController = previewController
         self.activityLogger = activityLogger
+        self.loginItemManager = loginItemManager
+        loginItemStatus = loginItemManager.status
         self.accessibilityTrust = accessibilityTrust
         self.accessibilityReduceMotion = accessibilityReduceMotion
+
+        isMenuBarIconVisible = defaults.object(forKey: PreferenceKey.menuBarIconVisible) == nil
+            || defaults.bool(forKey: PreferenceKey.menuBarIconVisible)
+        isSilentLaunchEnabled = defaults.bool(forKey: PreferenceKey.silentLaunchEnabled)
 
         if defaults.object(forKey: PreferenceKey.enabled) == nil {
             isEnabled = true
@@ -170,19 +241,26 @@ final class AppController: ObservableObject {
             move: moveChord
         )
 
+        eventSource.onInterruption = { [weak self] in
+            self?.gestureCoordinator.handleInputInterruption()
+        }
+
         eventTask = Task { [weak self, eventSource] in
-            for await event in eventSource.events {
+            for await batch in eventSource.events {
                 guard !Task.isCancelled else { break }
-                guard let self,
-                      self.isEnabled,
-                      self.accessibilityGranted,
-                      self.monitoringActive,
-                      eventSource.isRunning,
-                      event.sourceEpoch == eventSource.epoch
-                else {
-                    continue
+                // 一批输入在主执行器上同步处理，几何任务只能看到处理后的最新位置。
+                for event in batch.takeEvents() {
+                    guard let self,
+                          self.isEnabled,
+                          self.accessibilityGranted,
+                          self.monitoringActive,
+                          eventSource.isRunning,
+                          event.sourceEpoch == eventSource.epoch
+                    else {
+                        continue
+                    }
+                    self.gestureCoordinator.handle(event)
                 }
-                self.gestureCoordinator.handle(event)
             }
         }
 
@@ -223,6 +301,15 @@ final class AppController: ObservableObject {
             }
         }
 
+        activeSpaceTask = Task { [weak self] in
+            for await _ in NSWorkspace.shared.notificationCenter.notifications(
+                named: NSWorkspace.activeSpaceDidChangeNotification
+            ) {
+                guard !Task.isCancelled else { break }
+                self?.handleSystemInterruption()
+            }
+        }
+
         let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshPermissions()
@@ -247,11 +334,14 @@ final class AppController: ObservableObject {
         workspaceSleepTask = nil
         sessionResignTask?.cancel()
         sessionResignTask = nil
+        activeSpaceTask?.cancel()
+        activeSpaceTask = nil
         permissionTimer?.invalidate()
         permissionTimer = nil
+        eventSource.onInterruption = nil
         gestureCoordinator.cancelCurrentSession()
         eventSource.stop()
-        monitoringActive = false
+        setMonitoringActive(false)
         let logCompletion = activityLogger.finish()
         let task = Task { [windowController] in
             await windowController.releaseAll()
@@ -302,7 +392,7 @@ final class AppController: ObservableObject {
         statusCategory = nil
     }
 
-    /// 睡眠或用户会话离开时终止窗口交互并清除失效预览。
+    /// 睡眠、用户会话离开或切换桌面时终止窗口交互并清除失效预览。
     func handleSystemInterruption() {
         resetWindowInteractionForSystemChange()
     }
@@ -311,7 +401,7 @@ final class AppController: ObservableObject {
         gestureCoordinator.cancelCurrentSession()
         // 推进输入 epoch，让系统变化前排队的事件失效。
         eventSource.stop()
-        monitoringActive = false
+        setMonitoringActive(false)
         previewController.invalidate()
         reconcileMonitoring()
     }
@@ -338,21 +428,24 @@ final class AppController: ObservableObject {
         )
     }
 
-    /// 三组一起恢复，避免逐项恢复期间的临时冲突停止监听或写入日志。
-    func resetShortcutsToDefaults() {
+    /// 批量恢复手势设置，先阻断旧输入，避免中间冲突或松键提交旧排布。
+    func resetGestureSettingsToDefaults() {
         guard resizeChord != .defaultResize
                 || snapChord != .defaultSnap
                 || moveChord != .defaultMove else { return }
-        isResettingShortcuts = true
+        gestureCoordinator.cancelCurrentSession()
+        eventSource.stop()
+        setMonitoringActive(false)
+        isResettingGestureSettings = true
         resizeChord = .defaultResize
         snapChord = .defaultSnap
         moveChord = .defaultMove
-        isResettingShortcuts = false
+        isResettingGestureSettings = false
         shortcutsDidChange()
     }
 
     private func shortcutsDidChange() {
-        guard !isResettingShortcuts else { return }
+        guard !isResettingGestureSettings else { return }
         let previousMessage = shortcutValidationMessage
         shortcutValidationMessage = Self.validationMessage(
             resize: resizeChord,
@@ -388,6 +481,12 @@ final class AppController: ObservableObject {
         reconcileMonitoring()
     }
 
+    private func setMonitoringActive(_ active: Bool) {
+        // 权限轮询不应在状态未变时每 0.5 秒重绘主窗口与菜单栏。
+        guard monitoringActive != active else { return }
+        monitoringActive = active
+    }
+
     private func reconcileMonitoring() {
         guard shutdownTask == nil else { return }
         let shouldRun = isEnabled
@@ -404,7 +503,7 @@ final class AppController: ObservableObject {
             if eventSource.isRunning {
                 eventSource.stop()
             }
-            monitoringActive = false
+            setMonitoringActive(false)
             if wasMonitoring {
                 recordActivity(
                     level: .info,
@@ -420,7 +519,7 @@ final class AppController: ObservableObject {
             if !eventSource.isRunning {
                 try eventSource.start()
             }
-            monitoringActive = eventSource.isRunning
+            setMonitoringActive(eventSource.isRunning)
             if !wasRunning, monitoringActive {
                 lastListenerErrorMessage = nil
                 recordActivity(
@@ -430,7 +529,7 @@ final class AppController: ObservableObject {
                 )
             }
         } catch {
-            monitoringActive = false
+            setMonitoringActive(false)
             recordListenerErrorIfNeeded(error.localizedDescription)
         }
     }
@@ -438,7 +537,7 @@ final class AppController: ObservableObject {
     private func handleEventSourceFailure(_ error: EventSourceError) {
         gestureCoordinator.cancelCurrentSession()
         eventSource.stop()
-        monitoringActive = false
+        setMonitoringActive(false)
         if error == .accessibilityPermissionRequired {
             accessibilityGranted = false
         }
@@ -452,12 +551,14 @@ final class AppController: ObservableObject {
         recordActivity(level: .error, category: .listener, message: message)
     }
 
-    /// 等待 SwiftUI 场景入口可用后，首启复用主窗口；此处不申请权限。
-    func presentInitialWindowIfNeeded(openWindow: () -> Void) {
-        guard shutdownTask == nil,
-              !defaults.bool(forKey: PreferenceKey.hasShownOnboarding) else { return }
+    /// 手动打开同一个主窗口也完成首启标记；后台登录启动不调用此入口。
+    func markMainWindowPresented() {
+        if !hasPreparedMainWindow {
+            refreshPermissions()
+            mainWindowPage = accessibilityGranted ? .basic : .features
+            hasPreparedMainWindow = true
+        }
         defaults.set(true, forKey: PreferenceKey.hasShownOnboarding)
-        openWindow()
     }
 
     private static func loadChord(

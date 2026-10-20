@@ -1,6 +1,7 @@
 import ApplicationServices
 import CoreGraphics
 import Foundation
+import os
 
 struct WindowFrameMismatch: OptionSet, Equatable, Sendable {
     let rawValue: UInt8
@@ -60,11 +61,18 @@ protocol WindowControlling: Sendable {
     /// 尽力置前并聚焦目标窗口，仅确认目标后激活单个前窗，不得带起同 App 其他窗口。
     func raiseWindow(_ window: WindowSnapshot) async throws
 
+    /// 越过启动阈值并完成前置后，为连续移动／缩放准备一次；release 负责恢复。
+    func beginContinuousInteraction(with window: WindowSnapshot) async throws
+
     @discardableResult
     func setPosition(_ position: CGPoint, of window: WindowSnapshot) async throws -> WindowSnapshot
 
     @discardableResult
     func setSize(_ size: CGSize, of window: WindowSnapshot) async throws -> WindowSnapshot
+
+    /// 连续手势只更新几何，不同步读回；正常松键仍使用上面的接口读取最终结果。
+    func updatePosition(_ position: CGPoint, of window: WindowSnapshot) async throws
+    func updateSize(_ size: CGSize, of window: WindowSnapshot) async throws
 
     /// 动画中间帧按“尺寸 → 位置”写入；立即或最终提交补写尺寸并验证实际 frame。
     @discardableResult
@@ -81,6 +89,16 @@ protocol WindowControlling: Sendable {
 
 extension WindowControlling {
     func accessibilityPermissionDidRecover() async {}
+
+    func beginContinuousInteraction(with window: WindowSnapshot) async throws {}
+
+    func updatePosition(_ position: CGPoint, of window: WindowSnapshot) async throws {
+        _ = try await setPosition(position, of: window)
+    }
+
+    func updateSize(_ size: CGSize, of window: WindowSnapshot) async throws {
+        _ = try await setSize(size, of: window)
+    }
 }
 
 /// 排布动画按阶段使用不同的 AX 属性写入序列。
@@ -152,7 +170,7 @@ enum AXEnhancedUserInterfaceCompatibility {
     }
 }
 
-/// 跟踪同一目标应用内可能重叠的排布操作；空 owner 集合表示等待恢复原值。
+/// 跟踪同一目标应用内可能重叠的窗口操作；空 owner 集合表示等待恢复原值。
 struct AXEnhancedUserInterfaceSuppressionRegistry: Sendable {
     private var ownersByPID: [pid_t: Set<UUID>] = [:]
 
@@ -240,20 +258,27 @@ actor AXWindowController: WindowControlling {
         let element: AXUIElement
         let application: AXUIElement
         let pid: pid_t
+        var validationReads = AXWindowValidationReads()
+    }
+
+    private struct ContinuousInteraction {
+        let suppressionLease: AXEnhancedUserInterfaceSuppressionLease?
     }
 
     private static var fullScreenAttribute: CFString { "AXFullScreen" as CFString }
     // Finder 等应用开启此未公开 AX 属性后会自行平滑处理位置和尺寸写入。
-    // 仅在排布操作期间对原值为 true 的目标临时关闭，并在所有退出路径恢复。
+    // 仅在活动手势期间对原值为 true 的目标临时关闭，并在所有退出路径恢复。
     private static var enhancedUserInterfaceAttribute: CFString {
         "AXEnhancedUserInterface" as CFString
     }
     private static let messagingTimeout: Float = 0.35
 
     private var trackedWindows: [UUID: TrackedWindow] = [:]
+    private var continuousInteractions: [UUID: ContinuousInteraction] = [:]
     private var enhancedUserInterfaceRegistry = AXEnhancedUserInterfaceSuppressionRegistry()
     private var enhancedUserInterfaceApplications: [pid_t: AXUIElement] = [:]
     private let processActivator: any SingleWindowProcessActivating
+    private let signposter = OSSignposter(subsystem: "com.ghoooooost.Ordo", category: .pointsOfInterest)
 
     init(processActivator: any SingleWindowProcessActivating = SingleWindowProcessActivator()) {
         self.processActivator = processActivator
@@ -343,6 +368,30 @@ actor AXWindowController: WindowControlling {
         _ = try await SingleWindowFocusSequence.run(on: self) { controller, step in
             try await controller.performFocusStep(step, for: window)
         }
+    }
+
+    func beginContinuousInteraction(with window: WindowSnapshot) async throws {
+        try Task.checkCancellation()
+        let tracked = try validatedWindow(for: window)
+        guard continuousInteractions[window.id] == nil else { return }
+        let lease = acquireEnhancedUserInterfaceSuppression(for: tracked)
+        continuousInteractions[window.id] = ContinuousInteraction(suppressionLease: lease)
+        do {
+            try Task.checkCancellation()
+        } catch {
+            endContinuousInteraction(window.id)
+            throw error
+        }
+    }
+
+    private func endContinuousInteraction(_ windowID: UUID) {
+        if let lease = continuousInteractions.removeValue(forKey: windowID)?.suppressionLease {
+            releaseEnhancedUserInterfaceSuppression(lease)
+        }
+    }
+
+    private func endAllContinuousInteractions() {
+        for id in Array(continuousInteractions.keys) { endContinuousInteraction(id) }
     }
 
     private func performFocusStep(
@@ -476,23 +525,41 @@ actor AXWindowController: WindowControlling {
 
     @discardableResult
     func setPosition(_ position: CGPoint, of window: WindowSnapshot) async throws -> WindowSnapshot {
-        try Task.checkCancellation()
-        let tracked = try validatedWindow(for: window)
-        try Task.checkCancellation()
-        try writePoint(position, attribute: kAXPositionAttribute as CFString, to: tracked.element)
-        try Task.checkCancellation()
+        let tracked = try writeWindowPosition(position, of: window)
         return try refreshedSnapshot(window, element: tracked.element)
     }
 
     @discardableResult
     func setSize(_ size: CGSize, of window: WindowSnapshot) async throws -> WindowSnapshot {
+        let tracked = try writeWindowSize(size, of: window)
+        return try refreshedSnapshot(window, element: tracked.element)
+    }
+
+    func updatePosition(_ position: CGPoint, of window: WindowSnapshot) async throws {
+        _ = try writeWindowPosition(position, of: window)
+    }
+
+    func updateSize(_ size: CGSize, of window: WindowSnapshot) async throws {
+        _ = try writeWindowSize(size, of: window)
+    }
+
+    private func writeWindowPosition(_ position: CGPoint, of window: WindowSnapshot) throws -> TrackedWindow {
+        try Task.checkCancellation()
+        let tracked = try validatedWindow(for: window)
+        try Task.checkCancellation()
+        try writePoint(position, attribute: kAXPositionAttribute as CFString, to: tracked.element)
+        try Task.checkCancellation()
+        return tracked
+    }
+
+    private func writeWindowSize(_ size: CGSize, of window: WindowSnapshot) throws -> TrackedWindow {
         try Task.checkCancellation()
         let tracked = try validatedWindow(for: window)
         let positiveSize = CGSize(width: max(1, size.width), height: max(1, size.height))
         try Task.checkCancellation()
         try writeSize(positiveSize, attribute: kAXSizeAttribute as CFString, to: tracked.element)
         try Task.checkCancellation()
-        return try refreshedSnapshot(window, element: tracked.element)
+        return tracked
     }
 
     @discardableResult
@@ -556,10 +623,11 @@ actor AXWindowController: WindowControlling {
                 tolerance: .milliseconds(1)
             )
             try Task.checkCancellation()
-            guard trackedWindows[window.id]?.pid == window.pid else {
-                throw AXWindowControllerError.windowNoLongerAvailable(window.id)
-            }
+            // 休眠期间窗口可能进入全屏、失效或撤权；每帧写入前重新校验，不能沿用起始状态。
+            let current = try validatedWindow(for: window)
+            try Task.checkCancellation()
 
+            // AX 校验也可能阻塞，按校验完成后的时间计算进度，跳过已过期的采样。
             elapsed = start.duration(to: clock.now)
             let progress = Self.seconds(in: elapsed) / durationSeconds
             guard progress < 1 else { break }
@@ -569,7 +637,7 @@ actor AXWindowController: WindowControlling {
                 to: target,
                 progress: progress
             )
-            try writeFrame(intermediate, to: tracked.element, plan: .intermediate)
+            try writeFrame(intermediate, to: current.element, plan: .intermediate)
             elapsed = start.duration(to: clock.now)
         }
 
@@ -626,6 +694,7 @@ actor AXWindowController: WindowControlling {
     }
 
     func release(_ window: WindowSnapshot) async {
+        endContinuousInteraction(window.id)
         trackedWindows.removeValue(forKey: window.id)
         retryPendingEnhancedUserInterfaceRestoration(pid: window.pid)
     }
@@ -638,6 +707,7 @@ actor AXWindowController: WindowControlling {
     }
 
     func releaseAll() async {
+        continuousInteractions.removeAll(keepingCapacity: true)
         restoreAllEnhancedUserInterfaceApplications()
         trackedWindows.removeAll(keepingCapacity: true)
     }
@@ -645,19 +715,27 @@ actor AXWindowController: WindowControlling {
     // MARK: - AX 读取与写入
 
     private func validatedWindow(for snapshot: WindowSnapshot) throws -> TrackedWindow {
+        let interval = signposter.beginInterval("AX validation")
+        defer { signposter.endInterval("AX validation", interval) }
         try requirePermission()
-        guard let tracked = trackedWindows[snapshot.id], tracked.pid == snapshot.pid else {
+        guard var tracked = trackedWindows[snapshot.id], tracked.pid == snapshot.pid else {
             throw AXWindowControllerError.windowNoLongerAvailable(snapshot.id)
         }
 
-        var roleValue: CFTypeRef?
-        let roleResult = AXUIElementCopyAttributeValue(
-            tracked.element,
-            kAXRoleAttribute as CFString,
-            &roleValue
-        )
+        let element = tracked.element
+        let values = tracked.validationReads.read(multiple: { attributes in
+            var values: CFArray?
+            let result = AXUIElementCopyMultipleAttributeValues(element, attributes as CFArray, [], &values)
+            return (result, values)
+        }, single: { attribute in
+            var value: CFTypeRef?
+            let result = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+            return AXAttributeRead(result: result, value: value)
+        })
+        trackedWindows[snapshot.id] = tracked
+        let roleResult = values.role.result
         guard roleResult == .success,
-              let role = roleValue as? String,
+              let role = values.role.value as? String,
               role == kAXWindowRole as String
         else {
             if roleResult == .success {
@@ -666,7 +744,13 @@ actor AXWindowController: WindowControlling {
             throw mappedError(roleResult, operation: "验证目标窗口", windowID: snapshot.id)
         }
 
-        if try isNativeFullScreen(tracked.element) {
+        let fullScreen = values.fullScreen
+        if fullScreen.result != .success,
+           fullScreen.result != .attributeUnsupported,
+           fullScreen.result != .noValue {
+            throw mappedError(fullScreen.result, operation: "读取原生全屏状态", windowID: snapshot.id)
+        }
+        if fullScreen.result == .success, (fullScreen.value as? NSNumber)?.boolValue == true {
             throw AXWindowControllerError.nativeFullScreenWindow
         }
         return tracked
@@ -821,6 +905,8 @@ actor AXWindowController: WindowControlling {
         attribute: CFString,
         to element: AXUIElement
     ) throws {
+        let interval = signposter.beginInterval("AX position write")
+        defer { signposter.endInterval("AX position write", interval) }
         var mutablePoint = point
         guard let value = AXValueCreate(.cgPoint, &mutablePoint) else {
             throw AXWindowControllerError.invalidAttributeValue(attribute as String)
@@ -833,6 +919,8 @@ actor AXWindowController: WindowControlling {
         attribute: CFString,
         to element: AXUIElement
     ) throws {
+        let interval = signposter.beginInterval("AX size write")
+        defer { signposter.endInterval("AX size write", interval) }
         var mutableSize = size
         guard let value = AXValueCreate(.cgSize, &mutableSize) else {
             throw AXWindowControllerError.invalidAttributeValue(attribute as String)
@@ -887,6 +975,7 @@ actor AXWindowController: WindowControlling {
 
     private func requirePermission() throws {
         guard AXIsProcessTrusted() else {
+            endAllContinuousInteractions()
             trackedWindows.removeAll(keepingCapacity: true)
             throw AXWindowControllerError.accessibilityPermissionRequired
         }
@@ -1014,11 +1103,13 @@ actor AXWindowController: WindowControlling {
             return .operationTimedOut(operation)
         case .invalidUIElement:
             if let windowID {
+                endContinuousInteraction(windowID)
                 trackedWindows.removeValue(forKey: windowID)
                 return .windowNoLongerAvailable(windowID)
             }
             return .operationFailed(operation, code: error.rawValue)
         case .apiDisabled:
+            endAllContinuousInteractions()
             trackedWindows.removeAll(keepingCapacity: true)
             return .accessibilityPermissionRequired
         default:

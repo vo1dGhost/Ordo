@@ -6,10 +6,10 @@ struct WindowFrameAnimation: Equatable, Sendable {
     let duration: Duration
     let frameInterval: Duration
 
-    /// 八向排布的固定动画手感：200 ms，约 60 Hz。
+    /// 八向排布的固定动画手感：200 ms，目标 120 Hz。
     static let snapDefault = WindowFrameAnimation(
         duration: .milliseconds(200),
-        frameInterval: .nanoseconds(16_666_667)
+        frameInterval: WindowUpdateTiming.interval
     )
 
     /// 使用 smoothstep 同时插值位置与尺寸。进度会限制在 `0...1`，不会越过端点。

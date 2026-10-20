@@ -16,22 +16,9 @@ struct ModifierChordPicker: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title)
-
-                Spacer()
-
-                Text(selection.displayString)
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("当前组合：\(selection.displayString)")
-            }
-
-            Text(detail)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
+        HStack {
+            Text(title)
+            Spacer()
             HStack(spacing: 8) {
                 ForEach(choices) { choice in
                     Toggle(
@@ -51,8 +38,11 @@ struct ModifierChordPicker: View {
                 }
             }
         }
-        .padding(.vertical, 2)
+        .frame(minHeight: 30)
+        .help(detail)
         .accessibilityElement(children: .contain)
+        .accessibilityValue("当前组合：\(selection.displayString)")
+        .accessibilityHint(detail)
     }
 
     private func binding(for chord: ModifierChord) -> Binding<Bool> {

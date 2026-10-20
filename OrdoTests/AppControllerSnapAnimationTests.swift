@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 @testable import Ordo
@@ -299,6 +300,171 @@ final class AppControllerSnapAnimationTests: XCTestCase {
         }
     }
 
+    func testActiveSpaceChangesCancelPreviewDiscardOldEventsAndAllowReentry() async throws {
+        let (defaults, suiteName) = makeDefaults()
+        let events = SnapAnimationEventSource()
+        let windows = SnapAnimationWindowController()
+        let preview = SnapAnimationPreviewDisplay()
+        let controller = AppController(
+            defaults: defaults,
+            windowController: windows,
+            screenProvider: SnapAnimationScreenProvider(),
+            eventSource: events,
+            previewController: preview,
+            accessibilityTrust: { _ in true },
+            accessibilityReduceMotion: { false }
+        )
+        defer {
+            controller.shutdown()
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        controller.start()
+
+        // 分别覆盖仅有起点标记和已选中方向时切换桌面。
+        for expectedCount in 1...2 {
+            events.send(kind: .flagsChanged, modifiers: .defaultSnap, location: CGPoint(x: 500, y: 400))
+            try await waitForOriginMarkerCount(expectedCount, preview: preview)
+            if expectedCount == 2 {
+                events.send(kind: .mouseMoved, modifiers: .defaultSnap, location: CGPoint(x: 560, y: 400))
+                try await waitForPreviewCount(1, preview: preview)
+            }
+            let oldEpoch = events.epoch
+            // 进程内模拟通知，不切换系统桌面，也不操作真实窗口。
+            NSWorkspace.shared.notificationCenter.post(
+                name: NSWorkspace.activeSpaceDidChangeNotification,
+                object: NSWorkspace.shared
+            )
+            for _ in 0..<300 {
+                if preview.invalidateCount == expectedCount { break }
+                try await Task.sleep(for: .milliseconds(1))
+            }
+            XCTAssertEqual(preview.invalidateCount, expectedCount)
+            XCTAssertFalse(preview.isVisible)
+            XCTAssertFalse(preview.isOriginMarkerVisible)
+            XCTAssertGreaterThan(events.epoch, oldEpoch)
+            XCTAssertTrue(controller.monitoringActive)
+
+            events.send(kind: .mouseMoved, modifiers: .defaultSnap, location: CGPoint(x: 560, y: 400), sourceEpoch: oldEpoch)
+            events.send(kind: .flagsChanged, modifiers: [], location: CGPoint(x: 560, y: 400), sourceEpoch: oldEpoch)
+            try await Task.sleep(for: .milliseconds(20))
+            let transitions = await windows.appliedTransitions()
+            XCTAssertTrue(transitions.isEmpty)
+            // 新桌面先松开修饰键，再开始新的手势。
+            events.send(kind: .flagsChanged, modifiers: [], location: CGPoint(x: 560, y: 400))
+        }
+
+        events.send(kind: .flagsChanged, modifiers: .defaultSnap, location: CGPoint(x: 500, y: 400))
+        try await waitForOriginMarkerCount(3, preview: preview)
+        events.send(kind: .mouseMoved, modifiers: .defaultSnap, location: CGPoint(x: 560, y: 400))
+        try await waitForPreviewCount(2, preview: preview)
+        events.send(kind: .flagsChanged, modifiers: [], location: CGPoint(x: 560, y: 400))
+        try await waitForAppliedTransition(windows)
+        let transitions = await windows.appliedTransitions()
+        XCTAssertEqual(transitions, [.animated(.snapDefault)])
+
+        await controller.shutdown().value
+        let invalidationsAfterShutdown = preview.invalidateCount
+        let epochAfterShutdown = events.epoch
+        NSWorkspace.shared.notificationCenter.post(
+            name: NSWorkspace.activeSpaceDidChangeNotification,
+            object: NSWorkspace.shared
+        )
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(preview.invalidateCount, invalidationsAfterShutdown)
+        XCTAssertEqual(events.epoch, epochAfterShutdown)
+        XCTAssertFalse(controller.monitoringActive)
+    }
+
+    func testLegacyDistanceIsIgnoredBySelectionAndCancellation() async throws {
+        let (defaults, suiteName) = makeDefaults()
+        defaults.set(60, forKey: "ordo.snap.triggerDistance")
+        let events = SnapAnimationEventSource()
+        let windows = SnapAnimationWindowController()
+        let preview = SnapAnimationPreviewDisplay()
+        let controller = AppController(
+            defaults: defaults,
+            windowController: windows,
+            screenProvider: SnapAnimationScreenProvider(),
+            eventSource: events,
+            previewController: preview,
+            accessibilityTrust: { _ in true }
+        )
+        defer {
+            controller.shutdown()
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        controller.start()
+        events.send(kind: .flagsChanged, modifiers: .defaultSnap, location: CGPoint(x: 500, y: 400))
+        try await waitForOriginMarkerCount(1, preview: preview)
+        events.send(kind: .mouseMoved, modifiers: .defaultSnap, location: CGPoint(x: 508, y: 400))
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertFalse(preview.isVisible, "到达触发距离边界时不应选中")
+
+        events.send(kind: .mouseMoved, modifiers: .defaultSnap, location: CGPoint(x: 509, y: 400))
+        for _ in 0..<100 {
+            if preview.isVisible { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        XCTAssertTrue(preview.isVisible)
+        events.send(kind: .mouseMoved, modifiers: .defaultSnap, location: CGPoint(x: 505, y: 400))
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertFalse(preview.isVisible, "回到触发距离的三分之二时应取消")
+        XCTAssertTrue(preview.isOriginMarkerVisible)
+        events.send(kind: .flagsChanged, modifiers: [], location: CGPoint(x: 505, y: 400))
+        try await Task.sleep(for: .milliseconds(20))
+        let transitions = await windows.appliedTransitions()
+        XCTAssertTrue(transitions.isEmpty)
+        XCTAssertEqual(defaults.double(forKey: "ordo.snap.triggerDistance"), 60)
+    }
+
+    func testResetCancelsActiveSnapDiscardsOldInputAndAllowsNewDefaultGesture() async throws {
+        let (defaults, suiteName) = makeDefaults()
+        defaults.set(60, forKey: "ordo.snap.triggerDistance")
+        // 使用非默认的移动组合，使本次重置确实有快捷键变化。
+        defaults.set(Int(ModifierChord([.command, .option]).rawValue), forKey: "ordo.shortcut.move")
+        let events = SnapAnimationEventSource()
+        let windows = SnapAnimationWindowController()
+        let preview = SnapAnimationPreviewDisplay()
+        let controller = AppController(
+            defaults: defaults,
+            windowController: windows,
+            screenProvider: SnapAnimationScreenProvider(),
+            eventSource: events,
+            previewController: preview,
+            accessibilityTrust: { _ in true }
+        )
+        defer {
+            controller.shutdown()
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+        controller.start()
+        events.send(kind: .flagsChanged, modifiers: .defaultSnap, location: CGPoint(x: 500, y: 400))
+        try await waitForOriginMarkerCount(1, preview: preview)
+        events.send(kind: .mouseMoved, modifiers: .defaultSnap, location: CGPoint(x: 580, y: 400))
+        try await waitForPreviewCount(1, preview: preview)
+        let oldEpoch = events.epoch
+        // 连同已排队的松键一起丢弃，不能提交重置前的预览。
+        events.send(kind: .flagsChanged, modifiers: [], location: CGPoint(x: 580, y: 400))
+        controller.resetGestureSettingsToDefaults()
+        XCTAssertGreaterThan(events.epoch, oldEpoch)
+        XCTAssertFalse(preview.isVisible)
+        XCTAssertFalse(preview.isOriginMarkerVisible)
+        XCTAssertEqual(defaults.double(forKey: "ordo.snap.triggerDistance"), 60)
+        events.send(kind: .flagsChanged, modifiers: .defaultSnap, location: CGPoint(x: 500, y: 400), sourceEpoch: oldEpoch)
+        events.send(kind: .mouseMoved, modifiers: .defaultSnap, location: CGPoint(x: 580, y: 400), sourceEpoch: oldEpoch)
+        events.send(kind: .flagsChanged, modifiers: [], location: CGPoint(x: 580, y: 400), sourceEpoch: oldEpoch)
+        try await Task.sleep(for: .milliseconds(20))
+        let oldTransitions = await windows.appliedTransitions()
+        XCTAssertTrue(oldTransitions.isEmpty)
+        events.send(kind: .flagsChanged, modifiers: [], location: CGPoint(x: 500, y: 400))
+        events.send(kind: .flagsChanged, modifiers: .defaultSnap, location: CGPoint(x: 500, y: 400))
+        try await waitForOriginMarkerCount(2, preview: preview)
+        events.send(kind: .mouseMoved, modifiers: .defaultSnap, location: CGPoint(x: 525, y: 400))
+        try await waitForPreviewCount(2, preview: preview)
+        events.send(kind: .flagsChanged, modifiers: [], location: CGPoint(x: 525, y: 400))
+        try await waitForAppliedTransition(windows)
+    }
+
     private func makeDefaults() -> (UserDefaults, String) {
         let suiteName = "OrdoTests.SnapAnimation.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -375,16 +541,17 @@ final class AppControllerSnapAnimationTests: XCTestCase {
 
 @MainActor
 private final class SnapAnimationEventSource: EventSource {
-    let events: AsyncStream<InputEvent>
+    let events: AsyncStream<InputEventBatch>
     let failures: AsyncStream<EventSourceError>
-    private let eventContinuation: AsyncStream<InputEvent>.Continuation
+    private let eventContinuation: AsyncStream<InputEventBatch>.Continuation
     private(set) var isRunning = false
     private(set) var epoch: UInt64 = 0
     private(set) var lastError: EventSourceError?
+    var onInterruption: (@MainActor () -> Void)?
     private var timestamp: UInt64 = 0
 
     init() {
-        let (events, eventContinuation) = AsyncStream<InputEvent>.makeStream()
+        let (events, eventContinuation) = AsyncStream<InputEventBatch>.makeStream()
         self.events = events
         self.eventContinuation = eventContinuation
         failures = AsyncStream { _ in }
@@ -410,13 +577,13 @@ private final class SnapAnimationEventSource: EventSource {
     ) {
         timestamp &+= 1
         eventContinuation.yield(
-            InputEvent(
+            InputEventBatch([InputEvent(
                 kind: kind,
                 modifiers: modifiers,
                 location: location,
                 timestamp: timestamp,
                 sourceEpoch: sourceEpoch ?? epoch
-            )
+            )])
         )
     }
 }
