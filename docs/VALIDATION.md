@@ -1,3 +1,9 @@
+# 本机验证记录 · 2026-10-29（v1.0.1 GitHub 发布与下载回验）
+
+- **发布完成**：北京时间 **2026-10-29 13:20:05**，公开 [Ordo 1.0.1](https://github.com/vo1dGhost/Ordo/releases/tag/v1.0.1)，标记为最新版。标签 `v1.0.1` 对应提交 `47629707801b790ad71434d320ebe9624606134b`，App 源码与公证快照一致；上传 `Ordo-1.0.1-universal.dmg` 和 `SHA256SUMS.txt`，GitHub 返回的 DMG SHA-256 与本地一致。保留 v1.0.0、旧标签与附件，没有覆盖或移动。
+- **真实下载回验**：从 Chrome 的公开 Release 页面下载 DMG，下载文件与本地候选逐字节一致，SHA-256 为 `0425f1cbf3f5c812afe6f9564b3a80be284b8f2cb1117c3cda33c5d1cbae737f`，存在来源为 Chrome 的 `com.apple.quarantine` 标记，未清除。映像完整性检查通过；只读挂载后，App 全架构严格验签、公证票据验证及 Gatekeeper 再次通过（`accepted / source=Notarized Developer ID`），检查后正常卸载。原始记录在 `build/Notarization-20261029/DMG/` 的 `download-*.log`；本段编辑前文档归档至 `build/DocumentArchive/20261029-GitHubPublished/` 并核对 SHA-256。
+- **授权与范围**：用户明确授权官方 GitHub CLI 登录和发布，登录使用系统钥匙串及已有 `repo`、`read:org`、`gist` 范围，没有增加 Actions `workflow` 权限。仅推送 `main` 与 `v1.0.1`。本轮没有安装、启动或替换本机 App，首次打开与辅助功能授权、真实多应用、多屏和旧系统验收仍未完成；下载与 Gatekeeper 检查不能代替上述交互验证。
+
 # 本机验证记录 · 2026-10-29（v1.0.1 公证 App 的 DMG 发布候选）
 
 按用户授权，将上轮已公证的 **1.0.1（2）** Universal 2 App 原样打包为只读 DMG，包含 `Ordo.app`、指向 `/Applications` 的快捷入口和 MIT 许可证。未重新运行原 ad-hoc 打包脚本，以免覆盖 Developer ID 签名；DMG 容器自身未另行签名或公证。
