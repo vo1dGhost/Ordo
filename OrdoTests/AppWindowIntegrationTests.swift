@@ -34,7 +34,7 @@ final class AppWindowIntegrationTests: XCTestCase {
         XCTAssertFalse(controller.isMenuBarIconVisible)
         XCTAssertFalse(controller.monitoringActive)
         let initialSize = first.frame.size
-        XCTAssertEqual(first.contentLayoutRect.size, NSSize(width: 560, height: 500))
+        XCTAssertEqual(first.contentLayoutRect.size, NSSize(width: 560, height: 476))
         XCTAssertFalse(first.styleMask.contains(.resizable))
         XCTAssertEqual(controller.mainWindowPage, .features)
         let toolbar = try XCTUnwrap(first.toolbar as? MainWindowToolbar)
@@ -68,6 +68,7 @@ final class AppWindowIntegrationTests: XCTestCase {
         XCTAssertTrue(first === reopened)
         XCTAssertEqual(controller.mainWindowPage, .about)
         XCTAssertEqual(reopened.frame.size, initialSize)
+        MainWindowLayoutAssertions.assertSingleHeader(reopened)
         XCTAssertEqual(mainWindows.count, 1)
         XCTAssertFalse(controller.isMenuBarIconVisible)
         requestReopen()

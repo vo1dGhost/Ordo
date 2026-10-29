@@ -146,7 +146,7 @@ final class MainWindowPresentation {
 
 @MainActor
 enum MainWindowBehavior {
-    static let contentSize = NSSize(width: 560, height: 500)
+    static let contentSize = NSSize(width: 560, height: 476)
 
     static func apply(to window: NSWindow) {
         window.collectionBehavior.subtract([.canJoinAllSpaces, .fullScreenPrimary, .fullScreenAuxiliary, .fullScreenAllowsTiling])
@@ -157,10 +157,11 @@ enum MainWindowBehavior {
         if !(window.toolbar is MainWindowToolbar) {
             window.toolbar = MainWindowToolbar()
         }
-        window.toolbarStyle = .expanded
+        // 使用日历式标准高度，让分页与系统窗口控制按钮同排、垂直居中。
+        window.toolbarStyle = .unified
         // 文字已经位于原生分段控件内，不再在下方重复显示工具栏标签。
         window.toolbar?.displayMode = .iconOnly
-        window.titleVisibility = .visible
+        window.titleVisibility = .hidden
         // 标题栏与页面共用底色，只让分页胶囊保留独立的玻璃材质。
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
@@ -170,7 +171,7 @@ enum MainWindowBehavior {
         let fixedContent = NSSize(width: contentSize.width, height: contentSize.height + titlebarInset)
         window.contentMinSize = fixedContent
         window.contentMaxSize = fixedContent
-        // 同时覆盖旧版恢复的窗口尺寸；工具栏与标题栏不占用页面的 500 pt。
+        // 同时覆盖旧版恢复的窗口尺寸；工具栏与标题栏不占用页面的 476 pt。
         window.setContentSize(fixedContent)
         window.standardWindowButton(.zoomButton)?.isEnabled = false
     }

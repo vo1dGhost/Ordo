@@ -5,6 +5,23 @@ import XCTest
 
 @MainActor
 final class SnapOriginMarkerRenderingTests: XCTestCase {
+    func testOpaqueFacetsRemainAchromaticInEverySelection() throws {
+        for layout in [nil] + SnapLayout.allCases.map(Optional.some) {
+            let bitmap = try render(layout: layout, scale: 2)
+            var maximumChroma: CGFloat = 0
+            for y in 0..<bitmap.pixelsHigh {
+                for x in 0..<bitmap.pixelsWide {
+                    let color = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+                    guard color.alphaComponent > 0.1 else { continue }
+                    maximumChroma = max(maximumChroma,
+                        abs(color.redComponent - color.greenComponent),
+                        abs(color.greenComponent - color.blueComponent))
+                }
+            }
+            XCTAssertLessThan(maximumChroma, 0.02)
+        }
+    }
+
     func testOpaqueArtworkKeepsTransparentCanvasEdgesAndEmptyCenterAtBothScales() throws {
         for scale in [1, 2] {
             for layout in [nil] + SnapLayout.allCases.map(Optional.some) {

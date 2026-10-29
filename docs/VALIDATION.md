@@ -1,3 +1,153 @@
+# 本机验证记录 · 2026-10-29（v1.0.1 公证 App 的 DMG 发布候选）
+
+按用户授权，将上轮已公证的 **1.0.1（2）** Universal 2 App 原样打包为只读 DMG，包含 `Ordo.app`、指向 `/Applications` 的快捷入口和 MIT 许可证。未重新运行原 ad-hoc 打包脚本，以免覆盖 Developer ID 签名；DMG 容器自身未另行签名或公证。
+
+- **映像检查**：`hdiutil verify` 通过；只读挂载后，App 全架构严格验签、公证票据验证及 Gatekeeper 检查均通过，结果为 `accepted / source=Notarized Developer ID`。执行文件与原公证副本逐字节一致，许可证与仓库一致，Applications 链接正确，检查后正常卸载映像。
+- **附件**：`Ordo-1.0.1-universal.dmg` 的 SHA-256 为 `0425f1cbf3f5c812afe6f9564b3a80be284b8f2cb1117c3cda33c5d1cbae737f`，附 `SHA256SUMS.txt`。候选、验证日志和校验文件保存在 `build/Notarization-20261029/DMG/`。发布使用独立新标签 `v1.0.1`，保留 v1.0.0 与既有附件；源码须与公证快照一致。
+- **范围**：本轮只做分发打包及发布材料准备，不修改 App 行为，不重跑 XCTest 或真实 AX 用例，不替换本机 App。既有 272 项隔离测试是上轮记录，真实多应用、多屏、旧系统及首次授权验收仍待完成。README 与验证文档修改前归档至 `build/DocumentArchive/20261029-GitHubRelease/` 并核对 SHA-256；未删除文件。线上发布状态及下载回验以实际 GitHub Release 和后续证据为准。
+
+# 本机验证记录 · 2026-10-29（Developer ID 分发副本公证）
+
+按用户“进行公证”的授权，为当前工作区源码创建独立快照及 Universal 2 Release 归档，版本保持 **1.0.1（2）**、Bundle ID `com.ghoooooost.Ordo`。快照包含当前未提交的界面、键帽反馈和无色排布圆环实现；归档后逐目录比较 App 源码一致。此次结果仅适用于下列分发副本，不改变历史公开安装包的签名与公证状态。
+
+- **签名与提交**：通过已登录 Xcode 账号，以 `developer-id` / `destination=upload` 完成 Developer ID 云签名及 Apple 公证上传。两种架构均使用 `Developer ID Application: Yifan Cui (ND3SVRRF43)`，安全时间戳为北京时间 **2026-10-29 12:59:28**；工程 App／测试 target 的 Apple Development 配置及既有 ad-hoc 打包脚本保持不变。
+- **公证与最终验证**：上传后首次导出返回“processing”，未将上传成功计为公证通过。随后 Apple 公证票据取得并装订成功，`stapler validate` 通过；全部架构严格验签通过，Gatekeeper 返回 **`accepted / source=Notarized Developer ID`**。最终 ZIP 解压后的 App 再次通过上述三项检查。保留 Hardened Runtime、`LSUIElement=true`、最低 macOS 14，entitlements 为空，不含 App Sandbox 或调试 entitlement；分发执行文件未发现本机用户或临时目录路径。
+- **交付**：`build/Notarization-20261029/Ordo-1.0.1-DeveloperID-notarized-universal.zip`，SHA-256 为 `cfea1feb0d7c79c2361a5fe09e5899a95d42eb6f19a969d5ee3d9da9cca7dddf`。同目录保存 `SHA256SUMS.txt`、源码快照及哈希、归档、上传和装订日志、两种架构签名证据、Gatekeeper 结果及 ZIP 解压验证副本。未提交或发布到 GitHub，未替换已安装 App。
+- **范围与保留**：本轮没有修改 App 行为，未重跑 XCTest 或真实 AX 用例；公证与 Gatekeeper 本机检查不能代替浏览器下载隔离、首次安装授权、多应用、多屏和旧系统实机验收。原验证文档归档至 `build/DocumentArchive/20261029-Notarization/` 并逐字节及 SHA-256 核对；未删除文件，保留全部既有工作区修改，结束时磁盘约剩 6.4 GiB。
+
+# 本机验证记录 · 2026-10-29（无色排布圆环）
+
+后续按用户授权替换 /Applications/Ordo.app：旧版归档至 build/Archive/20261029-NeutralRing-004830/Ordo.app，候选与安装执行文件 SHA-256 一致，安装后严格验签及开发签名配置验证通过，启动 PID 78028 与完整执行路径核验通过。安装日志保存在 build/NeutralRing-20261029/install.log；本记录安装更新前归档至 build/DocumentArchive/20261029-NeutralRing-Installed/ 并核对 SHA-256。以下构建阶段的“未替换”描述仅适用于安装前；实际圆环玻璃效果仍待目视验收。
+
+八向排布起点圆环移除冰蓝／青蓝染色与人工渐变，macOS 26 使用无染色的系统 Liquid Glass，通过中性白色亮度和原有边缘强调选中方向；旧系统保留中性材质，减少透明度时使用不透明灰白。40 pt 画布、八瓣间隙、中央留空和方向映射保持原样。
+
+- **验证**：新增无色像素回归先在旧实现失败，修改后完整隔离 XCTest 272 项通过、0 失败；仅显式排除真实 AX 窗口用例，不计作通过或权限跳过。既有透明边缘、中央留空及选中瓣变化检查通过；像素检查针对不透明回退，不代表系统玻璃合成的实机验收。未改 AX 或动画时序，未重跑独立 AX 动画脚本。
+- **构建**：Debug 测试构建与 Universal 2 Release 构建通过，两个 App 全架构严格验签通过；沿用 Apple Development / ND3SVRRF43、Hardened Runtime、LSUIElement=true，Release 无 App Sandbox entitlement。构建与测试记录在 build/NeutralRing-20261029/，Release 候选位于其 Release/Ordo.app；未替换已安装 App、未提交或发布，实际玻璃外观与旧系统仍待目视验收。
+- **保留**：修改前 README 与本记录归档至 build/DocumentArchive/20261029-NeutralRing/ 并核对 SHA-256；保留所有既有未提交修改，复用构建缓存，构建后磁盘约剩 9.7 GiB。
+
+# 本机验证记录 · 2026-10-29（无文字功能演示动画）
+
+README 的三份功能示意 APNG 改为无文字暖黑色样式：背景 `#0C0A09`，窗口采用参考网站深色边栏的 `rgba(28,25,23,0.84)`；仅保留空白窗口、光标、键帽和排布预览／固定起点提示。键帽按住时亮起并轻微下沉、缩小，窗口与指针使用起止速度及加速度为零的五次缓动。移动／缩放由 6 秒缩短至 3 秒，排布由 12 秒缩短至 6 秒，松键后的排布提交仍为 0.2 秒。新版共用可编辑矢量时间轴和浏览器预览，原有 Keynote／GIF 保留为历史素材。
+
+- **格式与循环**：三份 APNG 均为 1920 × 1080、sRGB、无限循环；帧数分别为 180、180、360，逐帧时长均精确为 1/60 秒，所有 PNG 块的 CRC 校验通过。每份连续解码三轮，逐帧哈希完全一致，首帧与末帧相同。
+- **内容与动作**：全部场景无文字对象；逐帧检查移动尺寸不变且与光标同位移，缩放左上角固定且宽高变化与光标位移一致；三次排布在松键前保持原窗口并显示目标预览，松键后 0.2 秒到达目标。关键帧目视检查及本机浏览器三份实际 APNG 加载检查通过，图片原始尺寸均为 1920 × 1080。
+- **范围与保留**：仅修改演示资源、生成源与相应文档，不改 App 行为，不运行 Xcode／真实 AX 测试，不安装或发布。旧 APNG 与 Keynote 已归档并逐份核对 SHA-256；三份文档已按原路径归档并核对 SHA-256，保留全部既有修改。生成与核验证据位于 build/DemoRestyle-20261029/，验证后候选与最终 APNG 的 SHA-256 一致。结束时磁盘约剩 9.5 GiB；未生成大体积影片或逐帧文件组。
+
+# 本机验证记录 · 2026-10-29（重置快捷键移至右下角）
+
+功能页底部重置快捷键按钮改为右对齐，与卡片内部右边距对齐，保留红色文字、原有操作与无障碍提示。窗口内容区继续固定 560 × 476 pt。关于页动效本轮仅提供建议，没有实现。
+
+- **验证**：6 项隔离布局与窗口集成测试通过；Debug 测试构建、Universal 2 Release 构建、两个 App 全架构严格验签和现有候选配置验证通过。仅改对齐，未重跑完整核心手势及真实 AX 用例。
+- **安装**：旧版保留至 build/Archive/20261029-ResetTrailing-001012/Ordo.app，新版安装 /Applications/Ordo.app，候选与安装执行文件 SHA-256 一致，启动 PID 73923 与完整路径核验通过。证据位于 build/ResetTrailing-20261029/；文档事先归档至 build/DocumentArchive/20261029-ResetTrailing/ 并核对 SHA-256。保留全部既有修改，未提交或发布，构建期间磁盘约剩 11 GiB。
+
+# 本机验证记录 · 2026-10-29（动画开关上移与紧凑窗口）
+
+排布动画开关移到启用窗口管理正下方，权限缺失时权限整行继续位于开关下方；第二张卡片只保留三组快捷键。内容区保持 560 pt 宽，由 500 pt 收紧至 476 pt 高，系统标准工具栏另计，三页切换、权限及错误状态不改变窗口大小。原有开关绑定、减少动态效果提示、键帽顺序与按住绿色反馈保留。
+
+- **测量与回归**：先记录三页在 504 pt 内宽下的最小尺寸，最高手动权限状态为 420 pt；加上上下各 28 pt 边距，对应 476 pt 内容高度。旧实现针对新尺寸的回归先失败（实际 500 pt、期望 476 pt），修改后最终 271 项隔离 XCTest 通过、0 失败、0 跳过。深浅色三页、未授权与冲突、登录项待批准与失败、监听失败均在 420 pt 内，固定尺寸及无滚动检查通过。三页实测内容高度分别为基础 158–198 pt、功能 367–420 pt、关于 243 pt；顶部按钮与分页继续采用系统布局并通过既有对齐检查。
+- **构建与安装**：Debug 测试构建与 Universal 2 Release 构建、两个 App 全架构严格验签通过。旧版保留至 build/Archive/20261029-CompactOptions-000523/Ordo.app；新版安装 /Applications/Ordo.app，候选与安装执行文件 SHA-256 一致，启动核验 PID 73507 与完整路径通过。证据位于 build/CompactOptions-20261029/。
+- **范围与保留**：真实 AX 用例继续显式排除，未改动画或手势实现，未重跑独立 AX 动画脚本。自动几何检查不代替玻璃外观、VoiceOver 或旧系统的实机验收。README、AGENTS 与本记录同步新布局，原文事先归档至 build/DocumentArchive/20261029-CompactOptions/ 并核对 SHA-256。保留全部既有修改，未提交或发布，结束时磁盘约剩 12 GiB。
+
+# 本机验证记录 · 2026-10-28（启用窗口管理仅保留开关）
+
+按用户要求，移除启用窗口管理一行中的运行状态图标及文字，包括正在运行、已暂停、等待授权等，仅保留标题和启用开关。清除只用于这些显示的私有计算属性，并同步首次授权说明。保留权限引导、错误和冲突提示、菜单栏图标运行状态及原有控制逻辑。
+
+- **检查**：6 项隔离布局与窗口集成测试通过；Debug 测试构建、Universal 2 Release 构建、两个 App 全架构严格验签和现有候选配置验证通过。仅调整显示，未重跑完整手势或真实 AX 用例。
+- **安装**：旧版保留至 build/Archive/20261028-EnabledSwitchOnly-235913/Ordo.app，新版安装到 /Applications/Ordo.app，候选与安装文件的执行文件 SHA-256 一致，启动 PID 72862 与实际路径核验通过。证据位于 build/EnabledSwitchOnly-20261028/；文档改写前归档至 build/DocumentArchive/20261028-EnabledSwitchOnly/ 并核对 SHA-256。保留全部既有改动，未提交或发布，结束时磁盘约剩 11 GiB。
+
+# 本机验证记录 · 2026-10-28（移除登录项未找到提示）
+
+按用户要求，移除基础页中登录项 notFound 对应的文字提示，仅以开机自启开关关闭展示该状态。保留原有系统状态映射、等待批准及注册失败反馈；未操作真实登录项。
+
+- **验证**：28 项布局及控制器生命周期测试通过，包括四种登录项系统状态与开关映射；Debug 测试构建、Universal 2 Release 构建和两个 App 全架构严格验签通过。仅移除显示文本，没有重跑完整手势或真实 AX 测试。测试日志保留既有 AppKit 布局重入提示。
+- **安装**：归档旧版至 build/Archive/20261028-LoginNotice-235655/Ordo.app，安装 /Applications/Ordo.app 后再次验证签名与配置；执行文件与候选 SHA-256 一致，启动核验 PID 72525 及实际路径通过。证据位于 build/LoginNotice-20261028/，文档事先归档至 build/DocumentArchive/20261028-LoginNotice/ 并核对 SHA-256。保留既有改动，未提交或发布，结束时磁盘约剩 11 GiB。
+
+# 本机验证记录 · 2026-10-28（功能页修饰键绿色反馈）
+
+功能页获得窗口焦点时，按住 ⇧、⌃、⌥、⌘ 会使三个条目中的对应键帽临时显示绿色，优先于已选蓝色及未选灰色；支持多键同时按住，松开后逐键恢复。退出该页或失焦时清空状态，返回时重新读取当前修饰键。仅观察当前应用内的 flagsChanged 事件并原样返回，不新增权限，不改变全局 Event Tap、快捷键组合或持久化设置，不记录输入。macOS 26 使用玻璃键帽，macOS 14–25 使用标准边框按钮，按住未选键同样绿色。
+
+- **测试**：先添加尚未实现的类型回归测试，编译按预期失败；实现后最终 271 项隔离 XCTest 通过、0 失败、0 跳过。新增三项状态测试覆盖支持键过滤、多键按住及逐个松开、非活动状态与离页清除，以及三组快捷键中按住态覆盖已选和未选态。真实 AX 用例显式排除；没有向系统注入按键。
+- **构建与安装**：Debug 测试构建与 Universal 2 Release 构建、两个产物全架构严格验签通过，候选通过既有开发签名与配置校验。旧版保留至 build/Archive/20261028-PressedKeyFeedback-234951/Ordo.app，安装至 /Applications/Ordo.app，候选与安装文件的执行文件 SHA-256 一致，启动 PID 71919 和实际路径核验通过。
+- **范围**：证据位于 build/PressedKeyFeedback-20261028/。状态测试不替代真实键盘事件与绿色玻璃外观、窗口失焦恢复、VoiceOver、macOS 14–25 实机验收，以上仍待实机确认。未改 AX 实现，未重跑独立 AX 动画脚本；文档改写前归档至 build/DocumentArchive/20261028-PressedKeyFeedback/ 并核对 SHA-256。保留已有修改，未提交或发布，构建期间磁盘约剩 12 GiB。
+
+# 本机验证记录 · 2026-10-28（键帽位置顺序）
+
+按用户选择，三项功能的键帽从左到右统一改为 ⇧ ⌃ ⌥ ⌘。仅调整界面枚举顺序，保留组合值、逐键配色、校验及辅助功能整行隐藏行为。
+
+- **检查**：6 项隔离布局与窗口集成测试通过；Debug 测试构建与 Universal 2 Release 构建、两个 App 全架构严格验签通过，Release 继续通过生命周期工具的开发签名与配置验证。此为显示顺序调整，未重跑完整核心测试或真实 AX 用例；实际玻璃外观与 VoiceOver 顺序仍待实机确认。
+- **安装**：旧版保留至 build/Archive/20261028-KeyboardOrder-234225/Ordo.app，新版安装至 /Applications/Ordo.app，候选及安装文件的执行文件 SHA-256 一致，启动核验 PID 71233 及完整路径通过。证据位于 build/KeyboardOrder-20261028/。文档改写前归档到 build/DocumentArchive/20261028-KeyboardOrder/ 并核对 SHA-256。保留所有既有改动，未提交或发布，结束时磁盘约剩 12 GiB。
+
+# 本机验证记录 · 2026-10-28（移除整行蓝色强调）
+
+用户实机反馈上一轮仍然所有键呈蓝色；此前没有完成最终玻璃外观验收。本次检查发现整行仍保留 tint(.blue)，会向全部键帽传递强调色。现移除整行 tint，逐键依据当前组合设置蓝色或灰色；自定义玻璃样式内部同样明确选中蓝色、未选灰色和默认文字。实际保存的三组组合依次为 10、5、12，即 ⌥⇧、⌘⌃、⌃⇧，每组仅两个键，没有修改用户组合。
+
+- **验证**：268 项隔离测试通过、0 失败、0 跳过；真实 AX 用例显式排除。Debug 测试构建与 Universal 2 Release 构建、全架构严格验签通过。保留辅助功能整行随权限隐藏与恢复。
+- **安装**：旧版保留至 build/Archive/20261028-KeyTintFix-233600/Ordo.app；新候选验签后安装到 /Applications/Ordo.app，执行文件与候选 SHA-256 一致，启动核验 PID 70673、路径 /Applications/Ordo.app/Contents/MacOS/Ordo。证据保留在 build/KeyTintFix-20261028/。
+- **边界**：界面工具仍将完整安装路径解析为旧应用身份，刷新该路径注册信息后依然未能绑定窗口，因此未将构建、测试或启动核验表述为蓝色玻璃最终外观通过；仍需用户实机目视确认。文档已预先归档到 build/DocumentArchive/20261028-KeyTintFix/ 并核对 SHA-256。
+
+# 本机验证记录 · 2026-10-28（纠正选中键与整行权限隐藏）
+
+本条取代上一轮功能页说明：每项功能当前选中的修饰键明确绘制蓝色键帽底及白色符号，未选键维持普通玻璃；辅助功能已授权时整行与分隔线一并移除，撤权后恢复。窗口仍固定 560 × 500 pt。
+
+- **回归与构建**：先增强权限切换布局回归，旧实现因授权前后高度差 0 pt 而失败；修正后完整隔离 XCTest 268 项通过、0 失败、0 跳过。确认未授权内容比授权状态至少增加一行，恢复授权后回到原高度。Debug 测试构建、独立 Release 构建与两个产物全架构严格验签通过，Release 通过现有生命周期工具的团队、开发签名及配置验证。真实 AX 用例仍显式排除。
+- **安装**：正常退出旧进程后，将 /Applications/Ordo.app 归档到 build/Archive/20261028-FeatureKeysCorrection-233119/Ordo.app，再安装独立候选并验签。新旧候选的可执行文件 SHA-256 对比确认安装内容更新；安装文件与本次候选一致。启动核验 PID 70215，实际路径 /Applications/Ordo.app/Contents/MacOS/Ordo。
+- **边界与证据**：build/FeatureKeysCorrection-20261028/ 保存红测试、Tests.xcresult、截图、构建和安装日志。离屏截图玻璃层缺失，不能作为最终外观验收；界面工具对当前应用身份存在旧缓存及多副本歧义，未据此操作其他副本。蓝色玻璃实机外观、VoiceOver、旧系统和真实手势仍待目视及交互验收。文档改写前归档并核对 SHA-256；保留所有已有改动、旧版与旧验证记录，未提交或发布；结束时磁盘约剩 12 GiB。
+
+# 本机验证记录 · 2026-10-28（功能页键帽与权限按钮）
+
+已选快捷键键帽显式使用蓝色，未选保持原生中性样式。默认两个修饰键不再通过禁用控件而褪色，原有绑定校验仍阻止无效组合，并补充至少保留两个修饰键的无障碍提示。辅助功能已授权时保留状态、隐藏操作按钮；未授权及撤权后显示重新检查和授权，不自动弹出系统授权提示。
+
+- **验证**：最终隔离 XCTest 268 项通过、0 失败、0 跳过；新增授权、撤权、恢复时固定尺寸和内容高度检查。真实 AX 用例显式排除，不计入通过。Debug 测试构建与 Release 构建通过，两个最终 App 全架构严格验签通过，保持 Apple Development / ND3SVRRF43、Hardened Runtime、LSUIElement=true，且无 App Sandbox entitlement。
+- **界面边界**：离屏附件确认已授权行仅留状态、页面未裁切；截图不完整包含系统玻璃合成层，蓝色玻璃外观、VoiceOver 和 macOS 14–25 实机仍待验收。初次无障碍树断言无法读取 SwiftUI 控件，已改为权限切换布局回归，该次诊断失败不作为行为复现证据。未修改手势或 AX 实现，独立 AX 动画回归未重跑。
+- **证据与保留**：build/FeatureKeys-20261028/ 保存 FinalTests.xcresult、FinalAttachments、构建及签名日志，Release/Ordo.app 为独立候选。文档原件归档至 build/DocumentArchive/20261028-FeatureKeys/ 并核对 SHA-256。复用现有缓存，结束时可用空间约 12 GiB；保留已有改动，未提交、安装或发布。
+
+# 本机验证记录 · 2026-10-28（深色底与九块纯白扁平图标）
+
+按新要求试用扁平设计：默认与深色背景均为 `#121212`，九个块均为纯白，保留八向轮廓、224 × 224 的中心块及其圆角。三层关闭玻璃、高光、透光与投影，移除折射；SVG 不包含渐变。Icon Composer 的底板外缘仍有系统合成反光，当前没有将其误记为完全无光照的平面输出。菜单栏资源和应用行为未修改。
+
+- **检查**：确认恰好九块、三份设计 SVG 与运行资源逐字节一致，JSON 解析及 diff 空白检查通过。默认／深色 512 px、32 px、Design Generation 26 及系统着色预览已重新生成；系统着色主题仍可重新赋色。资源变更未运行 XCTest 或真实 AX 测试。
+- **构建**：独立 Universal 2 Release 构建成功，所有架构严格验签通过，保留团队 `ND3SVRRF43` 的 Apple Development、Bundle ID、Hardened Runtime、`LSUIElement=true` 与无 App Sandbox entitlement。产物与日志在 `build/IconFlat-20261028/`；未安装、提交或发布。
+- **归档**：上一版黑白玻璃图标和八张预览保存在 `build/IconFlat-20261028/Original/`；三份文档归档至 `build/DocumentArchive/20261028-IconFlat/` 并核对 SHA-256。无效的底板试验 SVG 也移入本轮构建目录保留，未删除文件。既有界面与测试未提交改动均保留；磁盘剩余约 13 GiB。真实桌面和旧系统外观未验收。
+
+# 本机验证记录 · 2026-10-28（黑白底玻璃主图标）
+
+主图标沿用 Icon Composer 分层 SVG：背景改为默认纯白、深色纯黑，移除蓝色渐变与强调瓣色差；保留八向轮廓，中央圆角块从 300 × 300 缩为 224 × 224，圆角从 72 缩为 54（1024 画布）。块面使用无彩色填充、系统高光、90% 透光及中性阴影，新一代配置启用折射；SVG 本身无渐变或烘焙光影。菜单栏、手势与主窗口实现未在本轮修改。
+
+- **渲染检查**：Apple Icon Composer 导出默认／深色 512 px、32 px、Design Generation 26 默认／深色和系统着色外观共八张预览，检查八瓣分离、缩小后的中心及高光边缘。26 渲染外观仅为兼容参考，不代表旧系统实机验证；系统着色可按用户主题重新赋色。预览位于 `Artwork/AppIconPreviews/`，README 改用本轮默认预览。纯白背景上的透明玻璃对比较低，小尺寸可辨识度仍需用户实际观察。
+- **构建与签名**：独立 Universal 2 Release（arm64、x86_64）构建成功，全部架构严格验签通过；Apple Development 团队 `ND3SVRRF43`、Bundle ID `com.ghoooooost.Ordo`、Hardened Runtime、`LSUIElement=true` 与无 App Sandbox entitlement 保留。初次受限验签无法取得系统信任链，获得系统访问后严格验证通过。构建仅有未依赖 AppIntents 的元数据提取提示。
+- **范围**：本轮为图标资源修改，未运行 XCTest、真实 AX 或桌面交互测试；未安装、提交或发布。当前工作区此前已有界面与文档改动，均保留。构建产物 `build/IconGlass-20261028/Release/Ordo.app` 包含该工作区状态，不能视作本轮单独功能验证。
+- **保留与检查**：旧主图标完整保存在 `build/IconGlass-20261028/Original/AppIcon.icon`；三份文档修改前归档到 `build/DocumentArchive/20261028-IconGlass/` 并核对 SHA-256。JSON 解析、无渐变配置、三份 SVG 设计源与运行资源逐字节同步、diff 空白检查均通过。磁盘可用空间约 13 GiB；未清理或删除文件。实际桌面动态图标光照、深色主题选择与旧系统外观待实机确认。
+
+# 本机验证记录 · 2026-10-23（参考日历的分页高度与窗口按钮对齐）
+
+只读观察本机 macOS 日历的分页按钮与左上角窗口控制按钮后，将 AppKit 和 SwiftUI 场景的工具栏从紧凑样式改为标准 `unified`，继续隐藏标题。原生控件负责高度、留白与系统按钮位置，没有手动移动窗口控制按钮。当前 macOS 27.0.1 实测分页胶囊高 **36 pt**、工具栏高 **52 pt**、上下各 **8 pt** 留白；三个窗口控制按钮与分页中心线一致。可用内容区仍为 **560 × 500 pt**，整个窗口固定为 560 × 552 pt；不恢复独立的“Ordo”标题行。尺寸是当前系统快照，旧系统仍由原生样式布局。
+
+- **回归**：旧紧凑配置先在两项窗口测试中产生 2 处预期失败；同步调整两层工具栏配置后，完整隔离 XCTest **267 项通过、0 失败、0 跳过**。三页及错误状态、深浅色、关闭重开均检查标准高度、上下留白和三个窗口按钮的中心线（误差最多 1 pt），同时保留固定内容区、无滚动、窗口复用与键盘切页检查。实际 SwiftUI Scene 的四次几何记录均为分页 `(163, 508, 234, 36)`、关闭按钮 `(19, 519, 14, 14)`，单位为窗口坐标 pt。
+- **构建与签名**：Debug（arm64）和 Universal 2 Release（arm64、x86_64）构建、全部架构严格验签与开发证书链核验通过。沿用 Apple Development / `ND3SVRRF43`、Hardened Runtime、`LSUIElement=true`、当前 Bundle ID、最低 macOS 14 和无 App Sandbox entitlement。构建缓存旧产物路径及既有 AppKit 布局提示保留在日志中。
+- **验收边界**：日历参考只观察工具栏，没有操作日历设置或内容。Ordo 的检查使用隔离测试宿主和几何记录；离屏截图仍不完整包含玻璃合成层，实际玻璃外观、VoiceOver、辅助功能外观和旧版 macOS 实机验证仍待人工确认。真实 AX 用例继续显式排除，不计作通过或权限跳过；未改动手势或 AX 实现，独立 AX 动画脚本未重跑。
+- **本机证据**：`build/ToolbarHeight-20261023/` 保存修改前基线、红测试、`Tests.xcresult`、测试摘要、几何与截图附件、构建和验签日志，产物位于其 `Debug/Ordo.app` 与 `Release/Ordo.app`。文档修改前归档至 `build/DocumentArchive/20261023-ToolbarHeight/` 并核对 SHA-256；复用已有构建缓存，保留此前未提交修改及验证产物，未提交、发布或替换已安装 App。
+
+# 本机验证记录 · 2026-10-23（移除独立标题行）
+
+按本轮要求移除单独显示“Ordo”的标题行，窗口控制按钮与纯文字分页胶囊共用一行。AppKit 使用 `unifiedCompact` 并隐藏标题，SwiftUI 场景同步使用 `.unifiedCompact(showsTitle: false)`，避免场景更新恢复标题。窗口名称仍为“Ordo”，供系统识别与无障碍使用；可用内容区仍固定 **560 × 500 pt**，现有分组卡片、玻璃控件与设置行为保留。未提交、发布或替换已安装 App。
+
+- **测试先行**：调整现有窗口回归后，旧实现的两项测试产生 3 处预期失败。仅修改 AppKit 后，真实 SwiftUI Scene 在三页和重开时仍恢复标题，产生 4 处失败；同步场景配置后，完整隔离 XCTest **267 项通过、0 失败、0 跳过**。
+- **布局验证**：三页切换、关闭重开、七种状态的深浅色组合及监听失败均检查标题隐藏、单行工具栏、分页与关闭按钮在同一窗口坐标中的垂直对齐（误差不超过 4 pt）；继续检查 560 × 500 pt 可用内容、页面高度、无滚动视图及窗口复用。最终截图确认没有独立标题行。离屏截图仍不能完整记录系统玻璃合成，不能作为真实玻璃材质与选中态的验收。
+- **构建与签名**：独立 Debug（arm64）和 Universal 2 Release（arm64、x86_64）构建、全部架构严格验签及开发证书链核验通过。保持团队 `ND3SVRRF43` 的 Apple Development、`com.ghoooooost.Ordo`、Hardened Runtime、`LSUIElement=true`、最低 macOS 14 和无 App Sandbox entitlement。测试报告无运行时警告；控制台既有的一次性 AppKit 布局重入提示与构建缓存旧路径提示已留存，没有因提示降低检查要求。
+- **范围**：显式排除 `AXWindowCompatibilityTests.testCurrentProcessSwiftUIWindowCanBeCapturedRaisedMovedAndResized`，不计作通过或权限跳过。未改动生产手势或 AX 实现，未重跑独立 AX 动画脚本；真实玻璃合成、VoiceOver、系统辅助功能外观及旧系统实机兼容仍待人工验收。
+- **本机证据**：`build/SingleHeader-20261023/` 保留修改前基线、红测试、`FinalTests.xcresult`、测试摘要、截图、构建和验签日志，独立产物位于其 `Debug/Ordo.app` 与 `Release/Ordo.app`。修改文档前归档至 `build/DocumentArchive/20261023-SingleHeader/` 并核对 SHA-256；沿用已有 DerivedData，没有清理旧文件或覆盖已有验证产物。
+
+# 本机验证记录 · 2026-10-21（Liquid Glass 分组卡片与玻璃控件）
+
+主窗口三页改为不透明分组卡片承载内容，玻璃只用于导航与可交互控件：快捷键键帽在 macOS 26+ 共用 `GlassEffectContainer`，选中为强调色玻璃，未选中为普通玻璃；“重新检查”“授权”“打开登录项设置”“GitHub 项目”改为系统玻璃按钮。macOS 14–25 回退为标准按钮。行为、偏好键、无障碍标识、固定 **560 × 500 pt** 内容区与分页工具栏均未改变；排布预览、起点标志和菜单栏未修改。版本保持 **1.0.1（2）**，未提交、发布或替换已安装 App。
+
+- **回归证据**：改动前主窗口布局、窗口行为与集成测试共 32 项基线通过；改动后完整隔离 XCTest **267 项通过、0 失败、0 跳过**。七种状态 × 深浅色及监听失败仍满足内容安全区域、页面所需高度 ≤ 444 pt 和无滚动视图检查。
+- **离屏截图发现**：独立放置的 `.glassProminent`“授权”按钮会使 `cacheDisplay` 离屏截图整页缺失（仅未授权状态，已用对照实验确认）。改为与“重新检查”共用 `GlassEffectContainer` 后七种状态均完整捕获。这只证明离屏捕获恢复，不能代表实际合成效果。
+- **截图与人工范围**：离屏截图不包含玻璃合成层，按钮底、键帽选中着色及深色模式下玻璃上的文字颜色均无法据此判断。真实玻璃外观、键帽选中／禁用态对比、减少透明度、VoiceOver 读出键帽选中状态、键盘 Tab 路径，以及 macOS 14–25 回退外观仍待人工确认；本机为 macOS 27，未实测旧系统。
+- **真实 AX**：本轮未改动 AX 与手势代码，显式排除 `AXWindowCompatibilityTests.testCurrentProcessSwiftUIWindowCanBeCapturedRaisedMovedAndResized`，不计作通过或权限跳过；独立 AX 动画脚本未重跑。
+- **构建与签名**：Debug 与 Release 构建通过，UI 源文件无编译警告；Release 产物严格验签通过，团队 `ND3SVRRF43`、Hardened Runtime、`LSUIElement=true`，无 App Sandbox entitlement。
+- **本机证据**：`build/LiquidGlassValidation-20261021/`（完整测试与构建日志、基线／对照／最终截图附件）；产物位于 `build/Verification/Debug`、`build/Verification/Release`。修改前的文档归档于 `build/DocumentArchive/20261021-LiquidGlassCards/`，原文件与副本 SHA-256 已核对。
+
 # 本机验证记录 · 2026-10-21（固定分页、文字胶囊与一体底色）
 
 主窗口改为“基础 / 功能 / 关于”，可用内容区固定 **560 × 500 pt**，系统标题栏与工具栏另计。按本轮确认采用 Apple「时钟」方向的纯文字胶囊，标题栏、分页栏和内容共用底色，移除横向分隔线。版本保持 **1.0.1（2）**；源码和产物仅在本机保留，未提交、发布或替换已安装 App。工作区已有的新 Bundle ID 与签名配置继续保留。

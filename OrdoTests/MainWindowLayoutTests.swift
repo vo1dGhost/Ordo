@@ -7,7 +7,41 @@ import XCTest
 /// 直接测量测试宿主自己的内容区域，不依赖真实辅助功能授权。
 @MainActor
 enum MainWindowLayoutAssertions {
+    static func assertSingleHeader(_ window: NSWindow, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(window.titleVisibility, .hidden, file: file, line: line)
+        XCTAssertEqual(window.toolbarStyle, .unified, file: file, line: line)
+        guard let pages = window.toolbar?.items.first?.view as? NSSegmentedControl,
+              let close = window.standardWindowButton(.closeButton) else {
+            XCTFail("主窗口缺少分页或关闭按钮", file: file, line: line)
+            return
+        }
+        // 直接比较同一窗口坐标，避免仅隐藏标题文字却仍留下独立的一行。
+        let pagesFrame = pages.convert(pages.bounds, to: nil)
+        XCTAssertGreaterThan(pagesFrame.width, 0, file: file, line: line)
+        if #available(macOS 26.0, *) {
+            XCTAssertGreaterThanOrEqual(pagesFrame.height, 32, "分页应使用标准工具栏高度", file: file, line: line)
+        }
+        for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            guard let button = window.standardWindowButton(type) else {
+                XCTFail("主窗口缺少系统控制按钮", file: file, line: line)
+                continue
+            }
+            let frame = button.convert(button.bounds, to: nil)
+            XCTAssertEqual(pagesFrame.midY, frame.midY, accuracy: 1, file: file, line: line)
+        }
+        let topMargin = window.frame.height - pagesFrame.maxY
+        let bottomMargin = pagesFrame.minY - window.contentLayoutRect.maxY
+        XCTAssertGreaterThanOrEqual(topMargin, 6, file: file, line: line)
+        XCTAssertGreaterThanOrEqual(bottomMargin, 6, file: file, line: line)
+        XCTAssertEqual(topMargin, bottomMargin, accuracy: 1, file: file, line: line)
+        let geometry = XCTAttachment(string: "分页：\(pagesFrame)；关闭按钮：\(close.convert(close.bounds, to: nil))；顶部留白：\(topMargin)；底部留白：\(bottomMargin)")
+        geometry.name = "顶部控件几何"
+        geometry.lifetime = .keepAlways
+        XCTContext.runActivity(named: "校验标准高度和窗口按钮对齐") { $0.add(geometry) }
+    }
+
     static func assertPageFits(_ window: NSWindow, controller: AppController, file: StaticString = #filePath, line: UInt = #line) {
+        assertSingleHeader(window, file: file, line: line)
         guard let content = window.contentView else {
             XCTFail("主窗口缺少内容", file: file, line: line)
             return
@@ -19,7 +53,7 @@ enum MainWindowLayoutAssertions {
         )
         // 捕获 fullSizeContentView 被移除后，宿主仍占满标题栏却丢失安全区域的回归。
         XCTAssertEqual(usableSize.width, 560, accuracy: 0.5, file: file, line: line)
-        XCTAssertEqual(usableSize.height, 500, accuracy: 0.5, file: file, line: line)
+        XCTAssertEqual(usableSize.height, 476, accuracy: 0.5, file: file, line: line)
         XCTAssertFalse(containsScrollView(content), "固定页面不应包含滚动区域", file: file, line: line)
 
         let page: AnyView
@@ -31,8 +65,9 @@ enum MainWindowLayoutAssertions {
         // 不套用主窗口的固定高度，独立测量实际页面在 28 pt 边距内所需的最小高度。
         let measurement = NSHostingView(rootView: page.frame(width: 504).fixedSize(horizontal: false, vertical: true))
         let needed = measurement.fittingSize
+        print("ORDO_LAYOUT page=\(controller.mainWindowPage.rawValue) granted=\(controller.accessibilityGranted) size=\(needed)")
         XCTAssertGreaterThan(needed.height, 0, file: file, line: line)
-        XCTAssertLessThanOrEqual(needed.height, 444, "页面需要 \(needed.height) pt，高于可用内容区域", file: file, line: line)
+        XCTAssertLessThanOrEqual(needed.height, 420, "页面需要 \(needed.height) pt，高于可用内容区域", file: file, line: line)
         XCTAssertEqual(needed.width, 504, accuracy: 0.5, file: file, line: line)
     }
 
@@ -43,6 +78,36 @@ enum MainWindowLayoutAssertions {
 
 @MainActor
 final class MainWindowLayoutTests: XCTestCase {
+    func testPermissionChangesPreserveFixedLayout() async throws {
+        let fixture = LayoutFixture(granted: true, loginStatus: .notRegistered)
+        fixture.controller.start()
+        fixture.controller.mainWindowPage = .features
+        var authorizedHeight: CGFloat?
+        for granted in [true, false, true] {
+            fixture.accessibilityGranted = granted
+            fixture.controller.refreshPermissions()
+            try await Task.sleep(for: .milliseconds(50))
+            fixture.window.contentView?.layoutSubtreeIfNeeded()
+            XCTAssertEqual(fixture.controller.accessibilityGranted, granted)
+            XCTAssertEqual(fixture.window.contentLayoutRect.size, NSSize(width: 560, height: 476))
+            let measurement = NSHostingView(rootView: FeatureSettingsView(controller: fixture.controller)
+                .frame(width: 504).fixedSize(horizontal: false, vertical: true))
+            XCTAssertLessThanOrEqual(measurement.fittingSize.height, 420)
+            if granted {
+                if let authorizedHeight {
+                    XCTAssertEqual(measurement.fittingSize.height, authorizedHeight, accuracy: 0.5)
+                } else {
+                    authorizedHeight = measurement.fittingSize.height
+                }
+            } else {
+                // 未授权时才插入整行权限内容；恢复授权后整行及分隔线一起移除。
+                XCTAssertGreaterThanOrEqual(measurement.fittingSize.height - (authorizedHeight ?? 0), 44)
+            }
+            try attach(fixture.window, name: granted ? "权限变化－已授权" : "权限变化－未授权")
+        }
+        await fixture.close()
+    }
+
     func testPagesAndErrorStatesStayWithinFixedContentBounds() async throws {
         let scenarios: [(String, MainWindowPage, Bool, SMAppService.Status, Bool, Bool)] = [
             ("基础", .basic, true, .notRegistered, false, false),
@@ -68,7 +133,7 @@ final class MainWindowLayoutTests: XCTestCase {
                 try await Task.sleep(for: .milliseconds(50))
                 window.contentView?.superview?.layoutSubtreeIfNeeded()
                 window.displayIfNeeded()
-                XCTAssertEqual(window.contentLayoutRect.size, NSSize(width: 560, height: 500))
+                XCTAssertEqual(window.contentLayoutRect.size, NSSize(width: 560, height: 476))
                 MainWindowLayoutAssertions.assertPageFits(window, controller: fixture.controller)
                 try attach(window, name: "\(name)－\(appearance.rawValue)")
                 await fixture.close()
@@ -83,7 +148,7 @@ final class MainWindowLayoutTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(50))
         fixture.window.contentView?.superview?.layoutSubtreeIfNeeded()
         fixture.window.displayIfNeeded()
-        XCTAssertEqual(fixture.window.contentLayoutRect.size, NSSize(width: 560, height: 500))
+        XCTAssertEqual(fixture.window.contentLayoutRect.size, NSSize(width: 560, height: 476))
         XCTAssertNotNil(fixture.controller.statusMessage)
         MainWindowLayoutAssertions.assertPageFits(fixture.window, controller: fixture.controller)
         try attach(fixture.window, name: "功能－监听失败")
@@ -105,12 +170,19 @@ final class MainWindowLayoutTests: XCTestCase {
 
 @MainActor
 private final class LayoutFixture {
+    private let trust: LayoutAccessibilityTrust
+    var accessibilityGranted: Bool {
+        get { trust.granted }
+        set { trust.granted = newValue }
+    }
     let suite = "OrdoTests.WindowLayout.\(UUID().uuidString)"
     let controller: AppController
     let loginItems: LayoutLoginItems
     let window: NSWindow
 
     init(granted: Bool, loginStatus: SMAppService.Status, listenerFails: Bool = false) {
+        let trust = LayoutAccessibilityTrust(granted: granted)
+        self.trust = trust
         let defaults = UserDefaults(suiteName: suite)!
         loginItems = LayoutLoginItems(status: loginStatus)
         controller = AppController(
@@ -120,10 +192,10 @@ private final class LayoutFixture {
             eventSource: LayoutEvents(shouldFail: listenerFails),
             previewController: LayoutPreview(),
             loginItemManager: loginItems,
-            accessibilityTrust: { _ in granted }
+            accessibilityTrust: { _ in trust.granted }
         )
         window = NSWindow(
-            contentRect: NSRect(x: 200, y: 200, width: 560, height: 500),
+            contentRect: NSRect(x: 200, y: 200, width: 560, height: 476),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered, defer: false
         )
@@ -139,6 +211,12 @@ private final class LayoutFixture {
         await controller.shutdown().value
         UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
     }
+}
+
+@MainActor
+private final class LayoutAccessibilityTrust {
+    var granted: Bool
+    init(granted: Bool) { self.granted = granted }
 }
 
 @MainActor

@@ -32,6 +32,7 @@ private struct MainWindowScene: Scene {
         }
         .defaultSize(width: MainWindowBehavior.contentSize.width, height: MainWindowBehavior.contentSize.height)
         .windowResizability(.contentSize)
+        .windowToolbarStyle(.unified(showsTitle: false))
         .onChange(of: appDelegate.mainWindowRequest, initial: true) { _, request in
             guard request > 0 else { return }
             controller.markMainWindowPresented()

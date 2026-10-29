@@ -41,40 +41,43 @@ struct BasicSettingsView: View {
     @ObservedObject var controller: AppController
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            LabeledContent("开机自启") {
-                Toggle("开机自启", isOn: Binding(
-                    get: { controller.isLaunchAtLoginEnabled },
-                    set: { controller.setLaunchAtLoginEnabled($0) }
-                ))
-                .labelsHidden()
-                .accessibilityIdentifier("ordo.launchAtLogin")
-                .help("登录当前用户后在后台启动 Ordo")
-            }
-
-            LabeledContent("显示菜单栏图标") {
-                Toggle("显示菜单栏图标", isOn: Binding(
-                    get: { controller.isMenuBarIconVisible },
-                    set: { controller.setMenuBarIconVisible($0) }
-                ))
-                .labelsHidden()
-                .accessibilityIdentifier("ordo.menuBarIconVisible")
-                .help("隐藏后，可通过 Finder 或 Spotlight 再次打开 Ordo 主窗口")
-                .accessibilityHint("隐藏后，可通过 Finder 或 Spotlight 再次打开 Ordo 主窗口")
-            }
-
-            LabeledContent("静默启动") {
-                Toggle("静默启动", isOn: Binding(
-                    get: { controller.isSilentLaunchEnabled },
-                    set: { controller.setSilentLaunchEnabled($0) }
-                ))
-                .labelsHidden()
-                .accessibilityIdentifier("ordo.silentLaunch")
-                .help("启动时不显示主窗口；运行中再次打开 Ordo 仍会显示主窗口")
-                .accessibilityHint("启动时不显示主窗口；运行中再次打开 Ordo 仍会显示主窗口")
+        VStack(alignment: .leading, spacing: 16) {
+            SettingsCard {
+                SettingsRow(title: "开机自启") {
+                    Toggle("开机自启", isOn: Binding(
+                        get: { controller.isLaunchAtLoginEnabled },
+                        set: { controller.setLaunchAtLoginEnabled($0) }
+                    ))
+                    .labelsHidden()
+                    .accessibilityIdentifier("ordo.launchAtLogin")
+                    .help("登录当前用户后在后台启动 Ordo")
+                }
+                Divider()
+                SettingsRow(title: "显示菜单栏图标") {
+                    Toggle("显示菜单栏图标", isOn: Binding(
+                        get: { controller.isMenuBarIconVisible },
+                        set: { controller.setMenuBarIconVisible($0) }
+                    ))
+                    .labelsHidden()
+                    .accessibilityIdentifier("ordo.menuBarIconVisible")
+                    .help("隐藏后，可通过 Finder 或 Spotlight 再次打开 Ordo 主窗口")
+                    .accessibilityHint("隐藏后，可通过 Finder 或 Spotlight 再次打开 Ordo 主窗口")
+                }
+                Divider()
+                SettingsRow(title: "静默启动") {
+                    Toggle("静默启动", isOn: Binding(
+                        get: { controller.isSilentLaunchEnabled },
+                        set: { controller.setSilentLaunchEnabled($0) }
+                    ))
+                    .labelsHidden()
+                    .accessibilityIdentifier("ordo.silentLaunch")
+                    .help("启动时不显示主窗口；运行中再次打开 Ordo 仍会显示主窗口")
+                    .accessibilityHint("启动时不显示主窗口；运行中再次打开 Ordo 仍会显示主窗口")
+                }
             }
 
             loginItemNotice
+                .padding(.horizontal, 14)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             Spacer(minLength: 0)
@@ -99,42 +102,56 @@ struct BasicSettingsView: View {
                     .foregroundStyle(.orange)
                 Spacer()
                 Button("打开登录项设置") { controller.openLoginItemSettings() }
+                    .ordoGlassButton()
             }
             .accessibilityIdentifier("ordo.loginItemApproval")
-        } else if controller.loginItemStatus == .notFound {
-            Label("无法找到当前 App 的登录项", systemImage: "exclamationmark.circle")
-                .foregroundStyle(.orange)
         }
     }
 }
 
 struct FeatureSettingsView: View {
     @ObservedObject var controller: AppController
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var keyFeedback = ModifierKeyFeedback()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
+            SettingsCard {
+                SettingsRow(title: "启用窗口管理") {
                     Toggle("启用窗口管理", isOn: $controller.isEnabled)
                         .toggleStyle(.switch)
-                        .fixedSize()
+                        .labelsHidden()
                         .accessibilityIdentifier("ordo.enabled")
                         .accessibilityHint("关闭后，Ordo 不再响应窗口手势")
-                    Spacer()
-                    Label(operationalTitle, systemImage: operationalSymbol)
-                        .foregroundStyle(operationalColor)
-                        .font(.callout)
-                        .accessibilityLabel("当前状态：\(operationalTitle)")
-                        .accessibilityIdentifier("ordo.operationalStatus")
                 }
-                AccessibilityPermissionSection(controller: controller)
+                Divider()
+                SettingsRow(title: "排布动画") {
+                    Toggle("排布动画", isOn: Binding(
+                        get: { controller.isSnapAnimationEnabled },
+                        set: { controller.setSnapAnimationEnabled($0) }
+                    ))
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .accessibilityIdentifier("ordo.snapAnimation")
+                    .accessibilityHint(
+                        reduceMotion
+                            ? "系统已开启减少动态效果，排布动画暂时停用"
+                            : "启用后，松开组合键时窗口平滑移动并调整到目标大小"
+                    )
+                }
+                if !controller.accessibilityGranted {
+                    Divider()
+                    AccessibilityPermissionSection(controller: controller)
+                }
             }
 
-            Divider()
-            GestureSettingsView(controller: controller)
+            SettingsCard {
+                GestureSettingsView(controller: controller, pressedModifiers: keyFeedback.pressedModifiers)
+            }
             Spacer(minLength: 0)
 
             statusNotice
+                .padding(.horizontal, 14)
                 .frame(height: 48, alignment: .topLeading)
 
             Button("重置快捷键", role: .destructive) {
@@ -142,11 +159,14 @@ struct FeatureSettingsView: View {
             }
             .buttonStyle(.borderless)
             .foregroundStyle(.red)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.horizontal, 14)
             .accessibilityIdentifier("ordo.resetGestureSettings")
             .accessibilityHint("仅恢复三组默认快捷键")
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("ordo.page.features")
+        .modifier(ModifierKeyFeedbackObserver(feedback: $keyFeedback))
     }
 
     private var statusNotice: some View {
@@ -172,25 +192,6 @@ struct FeatureSettingsView: View {
         }
     }
 
-    private var operationalTitle: String {
-        if controller.isOperational { return "正在运行" }
-        if !controller.isEnabled { return "已暂停" }
-        if !controller.accessibilityGranted { return "等待授权" }
-        if controller.shortcutValidationMessage != nil { return "快捷键需要调整" }
-        return "监听未运行"
-    }
-
-    private var operationalSymbol: String {
-        if controller.isOperational { return "checkmark.circle.fill" }
-        if !controller.isEnabled { return "pause.circle.fill" }
-        return "exclamationmark.circle.fill"
-    }
-
-    private var operationalColor: Color {
-        if controller.isOperational { return .green }
-        if !controller.isEnabled { return .secondary }
-        return .orange
-    }
 }
 
 struct AboutView: View {
@@ -212,6 +213,7 @@ struct AboutView: View {
                 .accessibilityIdentifier("ordo.about.version")
 
             Link("GitHub 项目", destination: projectURL)
+                .ordoGlassButton()
                 .padding(.top, 8)
                 .help(projectURL.absoluteString)
                 .accessibilityIdentifier("ordo.about.project")

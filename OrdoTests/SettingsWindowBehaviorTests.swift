@@ -12,11 +12,11 @@ final class MainWindowBehaviorTests: XCTestCase {
             defer: false
         )
         MainWindowBehavior.apply(to: window)
-        XCTAssertEqual(window.contentLayoutRect.size, NSSize(width: 560, height: 500))
+        XCTAssertEqual(window.contentLayoutRect.size, NSSize(width: 560, height: 476))
         XCTAssertFalse(window.styleMask.contains(.resizable))
         XCTAssertTrue(window.collectionBehavior.contains(.fullScreenNone))
         XCTAssertEqual(window.contentMinSize, window.contentMaxSize)
-        XCTAssertEqual(window.toolbarStyle, .expanded)
+        XCTAssertEqual(window.toolbarStyle, .unified)
     }
 
     func testOpeningWaitsForMenuTurnAndWindowBeforeRequestingActivation() {
@@ -343,7 +343,7 @@ final class MainWindowBehaviorTests: XCTestCase {
         XCTAssertTrue(window.collectionBehavior.contains(.fullScreenNone))
     }
 
-    func testTextPageGroupKeepsWindowTitleAndCloseControls() throws {
+    func testTextPagesHideTitleRowAndKeepCloseControls() throws {
         let styleMask: NSWindow.StyleMask = [
             .titled, .closable, .miniaturizable, .resizable, .fullSizeContentView,
         ]
@@ -355,8 +355,8 @@ final class MainWindowBehaviorTests: XCTestCase {
         )
         window.title = "Ordo"
         window.toolbar = NSToolbar(identifier: "OrdoTests.AutomaticToolbar")
-        window.toolbarStyle = .unifiedCompact
-        window.titleVisibility = .hidden
+        window.toolbarStyle = .expanded
+        window.titleVisibility = .visible
 
         MainWindowBehavior.apply(to: window)
 
@@ -372,8 +372,8 @@ final class MainWindowBehaviorTests: XCTestCase {
         XCTAssertEqual(toolbar.centeredItemIdentifiers, [item.itemIdentifier])
         XCTAssertEqual(toolbar.displayMode, .iconOnly)
         XCTAssertFalse(toolbar.allowsUserCustomization)
-        XCTAssertEqual(window.toolbarStyle, .expanded)
-        XCTAssertEqual(window.titleVisibility, .visible)
+        XCTAssertEqual(window.toolbarStyle, .unified)
+        XCTAssertEqual(window.titleVisibility, .hidden)
         XCTAssertTrue(window.titlebarAppearsTransparent)
         XCTAssertEqual(window.titlebarSeparatorStyle, .none)
         XCTAssertEqual(window.title, "Ordo")
@@ -419,7 +419,7 @@ final class MainWindowBehaviorTests: XCTestCase {
 
     func testPageControlSupportsKeyboardSelection() throws {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 500),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 476),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false

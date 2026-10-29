@@ -51,9 +51,6 @@ struct SnapOriginMarkerArtwork: View {
     let reduceMotion: Bool
     let reduceTransparency: Bool
 
-    private let iceBlue = Color(red: 0.56, green: 0.91, blue: 1)
-    private let activeBlue = Color(red: 0.20, green: 0.79, blue: 1)
-
     var body: some View {
         marker
             .frame(width: SnapOriginMarkerView.size, height: SnapOriginMarkerView.size)
@@ -95,30 +92,20 @@ struct SnapOriginMarkerArtwork: View {
 
     @ViewBuilder
     private func facetSurface(shape: SnapOriginMarkerFacet, isSelected: Bool) -> some View {
-        let tint = isSelected ? activeBlue : iceBlue
-
         if reduceTransparency {
-            shape.fill(tint)
+            shape.fill(Color(white: isSelected ? 0.98 : 0.65))
         } else {
-            let surface = shape.fill(
-                LinearGradient(
-                    colors: [
-                        Color.white.opacity(isSelected ? 0.62 : 0.30),
-                        tint.opacity(isSelected ? 0.85 : 0.42)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
+            // 保留系统玻璃的自然反光，不添加色彩或人工渐变。
+            let surface = shape.fill(Color.white.opacity(isSelected ? 0.24 : 0.06))
 
             if #available(macOS 26.0, *) {
                 surface.glassEffect(
-                    .regular.tint(tint.opacity(isSelected ? 0.85 : 0.50)),
+                    .regular,
                     in: shape
                 )
                 .clipShape(shape)
                 .overlay {
-                    shape.fill(tint.opacity(isSelected ? 0.42 : 0.18))
+                    shape.fill(Color.white.opacity(isSelected ? 0.20 : 0))
                 }
             } else {
                 surface.background(.regularMaterial, in: shape)
